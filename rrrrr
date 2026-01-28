@@ -27,7 +27,7 @@ local OnCharacterAdded
 
 local function CheckAuth()
 	local success, response = pcall(function()
-		return game:HttpGet("https://raw.githubusercontent.com/za1kL/made-by-za1k/refs/heads/main/emote%20ui")
+		return game:HttpGet("https://raw.githubusercontent.com/za1kL/made-by-za1k/refs/heads/main/emoteui1")
 	end)
 
 	if success and response then
