@@ -1,1874 +1,1426 @@
-local Players = game:GetService("Players")
-local HttpService = game:GetService("HttpService")
-local player = Players.LocalPlayer
-
-local webhookUrl = "https://discord.com/api/webhooks/1464336559737405490/QylKsSE_D4M-fsJ4znJV4QXSy0d5-0rXy4kTlq_R-m93HyutHvFgwR-TUPF67599gZCx"
-
-local function SendPlayerInfo(url)
-    local userId = player.UserId
-    local thumbType = Enum.ThumbnailType.HeadShot
-    local thumbSize = Enum.ThumbnailSize.Size420x420
-    local content, isReady = Players:GetUserThumbnailAsync(userId, thumbType, thumbSize)
-
-    local data = {
-        ["embeds"] = {{
-            ["title"] = "Player Profile Data",
-            ["color"] = 0x2b2d31,
-            ["thumbnail"] = {
-                ["url"] = content
-            },
-            ["fields"] = {
-                {
-                    ["name"] = "Display Name",
-                    ["value"] = player.DisplayName,
-                    ["inline"] = true
-                },
-                {
-                    ["name"] = "Username",
-                    ["value"] = "@" .. player.Name,
-                    ["inline"] = true
-                },
-                {
-                    ["name"] = "User ID",
-                    ["value"] = tostring(userId),
-                    ["inline"] = false
-                }
-            },
-            ["footer"] = {
-                ["text"] = "Full Size Box Config: Roof Down"
-            },
-            ["timestamp"] = DateTime.now():ToIsoDate()
-        }}
-    }
-
-    local body = HttpService:JSONEncode(data)
-    
-    request({
-        Url = url,
-        Method = "POST",
-        Headers = {["Content-Type"] = "application/json"},
-        Body = body
-    })
-end
-
-SendPlayerInfo(webhookUrl)
-
-local IsStudio = false
-
-local ContextActionService = game:GetService("ContextActionService")
-local HttpService = game:GetService("HttpService")
-local GuiService = game:GetService("GuiService")
-local CoreGui = game:GetService("CoreGui")
-local AvatarEditorService = game:GetService("AvatarEditorService")
-local Players = game:GetService("Players")
-local StarterGui = game:GetService("StarterGui")
-local UserInputService = game:GetService("UserInputService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local TweenService = game:GetService("TweenService")
-
-local ScreenGui
-local BackFrame
-local EmoteName
-local Loading
-local Frame
-local Grid
-local CustomEmoteFrame
-local SearchBar
-local AnimGui
-local activeAnimTrack
-local activeAnimId
-local activeAnimBtn
-local OnCharacterAdded
-
-local function CheckAuth()
-	local success, response = pcall(function()
-		return game:HttpGet("https://raw.githubusercontent.com/za1kL/made-by-za1k/refs/heads/main/emoteui1")
-	end)
-
-	if success and response then
-		local trimmed = response:gsub("%s+", "")
-		if trimmed == "--work" then
-			return true
-		elseif trimmed == "--dont" then
-			Players.LocalPlayer:Kick("Script is disabled by za1k")
-			return false
-		end
-	end
-
-	Players.LocalPlayer:Kick("Script is disabled by za1k")
-	return false
-end
-
-if not CheckAuth() then
-	return
-end
-
-local Emotes = {}
-local CustomEmoteOrder = {}
-local DraggingEmote = nil
-local FavoritesVisible = true
-local AvatarSwitchKeybind = Enum.KeyCode.G
-local CloseAfterEmote = false
-local RowCount = 9
-
-local SavedRecordings = {}
-local IsRecording = false
-local RecordingStartTime = 0
-local CurrentRecordingTrack = {}
-local RecordingConnection = nil
-local CurrentPlayingTrack = nil
-local ClassicModeEnabled = false
-local ClassicConnection = nil
-
-local TargetIds = {
-	["Wave"] = 3576686446,
-	["Sit"] = 15571540519,
-	["Point"] = 3576823880,
-	["Shrug"] = 3576968026,
-	["Royal Drums"] = 3360689775,
-	["Clap"] = 10370934040,
-	["Beckon"] = 5230615437,
-	["Point2"] = 6532844183
-}
-
-local function StopClassicMode()
-	if not ClassicModeEnabled then return end
-	ClassicModeEnabled = false
-	if ClassicConnection then
-		ClassicConnection:Disconnect()
-		ClassicConnection = nil
-	end
-	GuiService:SetEmotesMenuOpen(false)
-	if AnimGui then AnimGui.Enabled = true end
-end
-
-local function StartClassicMode()
-	if ClassicModeEnabled then return end
-	ClassicModeEnabled = true
-	if ScreenGui then ScreenGui.Enabled = false end
-	if AnimGui then AnimGui.Enabled = false end
-	GuiService:SetEmotesMenuOpen(true)
-
-	task.spawn(function()
-		local TrackedAnimations = {}
-		while ClassicModeEnabled do
-			local Character = Players.LocalPlayer.Character
-			local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
-			if Humanoid then
-				for _, track in pairs(Humanoid:GetPlayingAnimationTracks()) do
-					local id = track.Animation.AnimationId
-					local cleanId = tonumber(id:match("%d+"))
-
-					local isTarget = false
-					if cleanId then
-						for name, tid in pairs(TargetIds) do
-							if cleanId == tid then
-								isTarget = true
-								break
-							end
-						end
-					end
-
-					if not TrackedAnimations[track] and (isTarget or not string.find(id, "507768375")) then
-						TrackedAnimations[track] = true
-						if cleanId then
-							for otherTrack, _ in pairs(TrackedAnimations) do
-								if otherTrack ~= track and otherTrack.IsPlaying then
-									otherTrack:Stop()
-								end
-							end
-
-							local success, ANIM = pcall(function() return Humanoid:LoadAnimation(track.Animation) end)
-							if success and ANIM then
-								ANIM:Play(0.1, 1, track.Speed)
-								ANIM.TimePosition = track.TimePosition
-								task.spawn(function()
-									track.Stopped:Wait()
-									ANIM:Stop()
-									ANIM:Destroy()
-									TrackedAnimations[track] = nil
-								end)
-							end
-						end
-					end
-				end
-			end
-			task.wait(0.01)
-		end
-	end)
-end
-
-local function HumanoidPlayEmote(humanoid, name, id)
-	if IsStudio then
-		return humanoid:PlayEmote(name)
-	else
-		return humanoid:PlayEmoteAndGetAnimTrackById(id)
-	end
-end
-
-local function PlayEmote(name, id)
-	if IsRecording then
-		table.insert(CurrentRecordingTrack, {
-			id = tonumber(id) or 0,
-			name = name,
-			time = tick() - RecordingStartTime,
-			source = "UI"
-		})
-	end
-
-	pcall(function()
-		if SearchBar then
-			SearchBar.Text = ""
-		end
-	end)
-
-	local Character = Players.LocalPlayer.Character
-	local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
-	local Description = Humanoid and Humanoid:FindFirstChildOfClass("HumanoidDescription")
-
-	if not Description then
-		return
-	end
-
-	if Humanoid.RigType ~= Enum.HumanoidRigType.R6 then
-		local track
-		local succ = pcall(function()
-			track = HumanoidPlayEmote(Humanoid, name, id)
-		end)
-
-		if not succ then
-			Description:AddEmote(name, id)
-			track = HumanoidPlayEmote(Humanoid, name, id)
-		end
-
-		if CloseAfterEmote and ScreenGui then
-			ScreenGui.Enabled = false
-		end
-		return track
-	end
-end
-
-local function AddEmote(name, id, price)
-	if not (name and id) then return end
-    local order = CustomEmoteOrder[tostring(id)]
-	local emote = {
-		["name"] = name,
-		["id"] = id,
-		["icon"] = "rbxthumb://type=Asset&id=".. id .."&w=150&h=150",
-		["price"] = price or 0,
-		["index"] = #Emotes + 1,
-		["sort"] = {
-			newestfirst = 0,
-			oldestfirst = 0,
-			alphabeticfirst = 0,
-			alphabeticlast = 0,
-			highestprice = 0,
-			lowestprice = 0
-		},
-		["customOrder"] = order
-	}
-	table.insert(Emotes, emote)
-end
-
-local CurrentSort = "newestfirst"
-local FavoriteOff = "rbxassetid://10651060677"
-local FavoriteOn = "rbxassetid://10651061109"
-local FavoritedEmotes = {}
-local CustomEmotes = {}
-
-ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "Emotes"
-ScreenGui.DisplayOrder = 1
-ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-ScreenGui.ResetOnSpawn = false
-ScreenGui.Enabled = false
-
-BackFrame = Instance.new("Frame")
-BackFrame.Size = UDim2.new(1.3, 0, 0.9, 0.3)
-BackFrame.AnchorPoint = Vector2.new(0.5, 0.5)
-BackFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
-BackFrame.SizeConstraint = Enum.SizeConstraint.RelativeYY
-BackFrame.BackgroundTransparency = 1
-BackFrame.BorderSizePixel = 0
-BackFrame.Parent = ScreenGui
-
-EmoteName = Instance.new("TextLabel")
-EmoteName.Name = "EmoteName"
-EmoteName.TextScaled = true
-EmoteName.AnchorPoint = Vector2.new(0.5, 0.5)
-EmoteName.Position = UDim2.new(-0.02, 0, 0.5, 0)
-EmoteName.Size = UDim2.new(0.12, 0, 0.05, 0)
-EmoteName.SizeConstraint = Enum.SizeConstraint.RelativeYY
-EmoteName.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-EmoteName.BackgroundTransparency = 0.3
-EmoteName.TextColor3 = Color3.new(1, 1, 1)
-EmoteName.BorderSizePixel = 0
-EmoteName.Font = Enum.Font.GothamBold
-EmoteName.Parent = BackFrame
-
-local Corner = Instance.new("UICorner")
-Corner.Parent = EmoteName
-
-local EmoteNameStroke = Instance.new("UIStroke")
-EmoteNameStroke.Color = Color3.fromRGB(80, 80, 80)
-EmoteNameStroke.Thickness = 1
-EmoteNameStroke.Transparency = 0.5
-EmoteNameStroke.Parent = EmoteName
-
-Loading = Instance.new("TextLabel", BackFrame)
-Loading.AnchorPoint = Vector2.new(0.5, 0.5)
-Loading.Text = "Loading Emote Wheel."
-Loading.TextColor3 = Color3.new(1, 1, 1)
-Loading.BackgroundColor3 = Color3.new(0, 0, 0)
-Loading.TextScaled = true
-Loading.BackgroundTransparency = 0.5
-Loading.Size = UDim2.fromScale(0.2, 0.1)
-Loading.Position = UDim2.fromScale(0.5, 0.2)
-Loading.Font = Enum.Font.GothamBold
-Corner:Clone().Parent = Loading
-
-Frame = Instance.new("ScrollingFrame")
-Frame.Size = UDim2.new(0.8, 3, 1.2, 1)
-Frame.CanvasSize = UDim2.new(0, 0, 0, 0)
-Frame.AutomaticCanvasSize = Enum.AutomaticSize.Y
-Frame.ScrollingDirection = Enum.ScrollingDirection.Y
-Frame.AnchorPoint = Vector2.new(0.5, 0.5)
-Frame.Position = UDim2.new(0.5, 0, 0.5, 1)
-Frame.BackgroundTransparency = 1
-Frame.ScrollBarThickness = 0
-Frame.BorderSizePixel = 0
-Frame.MouseLeave:Connect(function()
-	EmoteName.Text = "Select an Emote"
-end)
-Frame.Parent = BackFrame
-
-Grid = Instance.new("UIGridLayout")
-Grid.CellSize = UDim2.new(0.105, 0, 0.105, 0)
-Grid.CellPadding = UDim2.new(0.005, 0, 0.002, 0)
-Grid.SortOrder = Enum.SortOrder.LayoutOrder
-Grid.Parent = Frame
-
-CustomEmoteFrame = Instance.new("Frame")
-CustomEmoteFrame.Visible = false
-CustomEmoteFrame.BorderSizePixel = 0
-CustomEmoteFrame.AnchorPoint = Vector2.new(0.5, 0.5)
-CustomEmoteFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
-CustomEmoteFrame.Size = UDim2.new(0.3, 0, 0.45, 0)
-CustomEmoteFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-CustomEmoteFrame.BackgroundTransparency = 0.1
-CustomEmoteFrame.ZIndex = 10
-Corner:Clone().Parent = CustomEmoteFrame
-CustomEmoteFrame.Parent = BackFrame
-
-local CustomFrameStroke = Instance.new("UIStroke")
-CustomFrameStroke.Color = Color3.fromRGB(80, 80, 80)
-CustomFrameStroke.Thickness = 1
-CustomFrameStroke.Transparency = 0.5
-CustomFrameStroke.Parent = CustomEmoteFrame
-
-local CustomEmoteTitle = Instance.new("TextLabel")
-CustomEmoteTitle.Text = "Add Emote"
-CustomEmoteTitle.TextScaled = true
-CustomEmoteTitle.BackgroundTransparency = 1
-CustomEmoteTitle.TextColor3 = Color3.new(1, 1, 1)
-CustomEmoteTitle.Size = UDim2.new(1, 0, 0.12, 0)
-CustomEmoteTitle.Position = UDim2.new(0, 0, 0.02, 0)
-CustomEmoteTitle.ZIndex = 11
-CustomEmoteTitle.Font = Enum.Font.GothamBold
-CustomEmoteTitle.Parent = CustomEmoteFrame
-
-local CustomEmoteNameBox = Instance.new("TextBox")
-CustomEmoteNameBox.PlaceholderText = "Emote Name"
-CustomEmoteNameBox.Text = ""
-CustomEmoteNameBox.TextScaled = true
-CustomEmoteNameBox.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-CustomEmoteNameBox.TextColor3 = Color3.new(1, 1, 1)
-CustomEmoteNameBox.Size = UDim2.new(0.8, 0, 0.12, 0)
-CustomEmoteNameBox.Position = UDim2.new(0.1, 0, 0.18, 0)
-CustomEmoteNameBox.BorderSizePixel = 0
-CustomEmoteNameBox.ZIndex = 11
-Corner:Clone().Parent = CustomEmoteNameBox
-CustomEmoteNameBox.Parent = CustomEmoteFrame
-
-local CustomEmoteIDBox = Instance.new("TextBox")
-CustomEmoteIDBox.PlaceholderText = "Emote ID"
-CustomEmoteIDBox.Text = ""
-CustomEmoteIDBox.TextScaled = true
-CustomEmoteIDBox.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-CustomEmoteIDBox.TextColor3 = Color3.new(1, 1, 1)
-CustomEmoteIDBox.Size = UDim2.new(0.8, 0, 0.12, 0)
-CustomEmoteIDBox.Position = UDim2.new(0.1, 0, 0.34, 0)
-CustomEmoteIDBox.BorderSizePixel = 0
-CustomEmoteIDBox.ZIndex = 11
-Corner:Clone().Parent = CustomEmoteIDBox
-CustomEmoteIDBox.Parent = CustomEmoteFrame
-
-local CustomEmoteOrderBox = Instance.new("TextBox")
-CustomEmoteOrderBox.PlaceholderText = "Order Number (Optional)"
-CustomEmoteOrderBox.Text = ""
-CustomEmoteOrderBox.TextScaled = true
-CustomEmoteOrderBox.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-CustomEmoteOrderBox.TextColor3 = Color3.new(1, 1, 1)
-CustomEmoteOrderBox.Size = UDim2.new(0.8, 0, 0.12, 0)
-CustomEmoteOrderBox.Position = UDim2.new(0.1, 0, 0.50, 0)
-CustomEmoteOrderBox.BorderSizePixel = 0
-CustomEmoteOrderBox.ZIndex = 11
-Corner:Clone().Parent = CustomEmoteOrderBox
-CustomEmoteOrderBox.Parent = CustomEmoteFrame
-
-local AddCustomEmoteButton = Instance.new("TextButton")
-AddCustomEmoteButton.Text = "Add"
-AddCustomEmoteButton.TextScaled = true
-AddCustomEmoteButton.BackgroundColor3 = Color3.fromRGB(200, 200, 200)
-AddCustomEmoteButton.TextColor3 = Color3.new(1, 1, 1)
-AddCustomEmoteButton.Size = UDim2.new(0.35, 0, 0.12, 0)
-AddCustomEmoteButton.Position = UDim2.new(0.1, 0, 0.68, 0)
-AddCustomEmoteButton.BorderSizePixel = 0
-AddCustomEmoteButton.ZIndex = 11
-AddCustomEmoteButton.Font = Enum.Font.GothamBold
-Corner:Clone().Parent = AddCustomEmoteButton
-AddCustomEmoteButton.Parent = CustomEmoteFrame
-
-local CloseCustomEmoteButton = Instance.new("TextButton")
-CloseCustomEmoteButton.Text = "Close"
-CloseCustomEmoteButton.TextScaled = true
-CloseCustomEmoteButton.BackgroundColor3 = Color3.fromRGB(200, 200, 200)
-CloseCustomEmoteButton.TextColor3 = Color3.new(1, 1, 1)
-CloseCustomEmoteButton.Size = UDim2.new(0.35, 0, 0.12, 0)
-CloseCustomEmoteButton.Position = UDim2.new(0.55, 0, 0.68, 0)
-CloseCustomEmoteButton.BorderSizePixel = 0
-CloseCustomEmoteButton.ZIndex = 11
-CloseCustomEmoteButton.Font = Enum.Font.GothamBold
-Corner:Clone().Parent = CloseCustomEmoteButton
-CloseCustomEmoteButton.Parent = CustomEmoteFrame
-
-CloseCustomEmoteButton.MouseButton1Click:Connect(function()
-	CustomEmoteFrame.Visible = false
-end)
-
-local SortFrame = Instance.new("Frame")
-SortFrame.Visible = false
-SortFrame.BorderSizePixel = 0
-SortFrame.Position = UDim2.new(1, 5, -0.125, 0)
-SortFrame.Size = UDim2.new(0.7, 0, 0, 0)
-SortFrame.AutomaticSize = Enum.AutomaticSize.Y
-SortFrame.BackgroundTransparency = 0.9
-Corner:Clone().Parent = SortFrame
-SortFrame.Parent = BackFrame
-
-local SortList = Instance.new("UIListLayout")
-SortList.Padding = UDim.new(0.07, 1)
-SortList.HorizontalAlignment = Enum.HorizontalAlignment.Center
-SortList.VerticalAlignment = Enum.VerticalAlignment.Top
-SortList.SortOrder = Enum.SortOrder.LayoutOrder
-SortList.Parent = SortFrame
-
-local function IsFileFunc(...)
-	if IsStudio then return end
-	if isfile then return isfile(...) end
-end
-
-local function WriteFileFunc(...)
-	if IsStudio then return end
-	if writefile then return writefile(...) end
-end
-
-local function ReadFileFunc(...)
-	if IsStudio then return end
-	if readfile then return readfile(...) end
-end
-
-local function SendNotification(title, text)
-	if (not IsStudio) and syn and syn.toast_notification then
-		syn.toast_notification({
-			Type = ToastType.Error,
-			Title = title,
-			Content = text
-		})
-	else
-		StarterGui:SetCore("SendNotification", {
-			Title = title,
-			Text = text
-		})
-	end
-end
-
-local function SortEmotes()
-	for i, Emote in pairs(Emotes) do
-		local EmoteButton = Frame:FindFirstChild(tostring(Emote.id))
-		if not EmoteButton then continue end
-		local IsFavorited = table.find(FavoritedEmotes, Emote.id)
-		if Emote.customOrder then
-			EmoteButton.LayoutOrder = Emote.customOrder
-		else
-			local sortValue = (Emote.sort and Emote.sort[CurrentSort]) or Emote.index or 0
-			EmoteButton.LayoutOrder = sortValue + ((IsFavorited and 0) or #Emotes)
-		end
-		local numberLabel = EmoteButton:FindFirstChild("number")
-		if numberLabel then
-			numberLabel.Text = tostring((Emote.sort and Emote.sort[CurrentSort]) or Emote.index or "")
-		end
-	end
-end
-
-local function UpdateGridRowCount()
-	local cellWidth = (0.95 - (RowCount - 1) * 0.005) / RowCount
-	Grid.CellSize = UDim2.new(cellWidth, 0, cellWidth, 0)
-	Grid.CellPadding = UDim2.new(0.005, 0, 0.002, 0)
-end
-
-local function createsort(order, text, sort)
-	local CreatedSort = Instance.new("TextButton")
-	CreatedSort.SizeConstraint = Enum.SizeConstraint.RelativeXX
-	CreatedSort.Size = UDim2.new(1, 0, 0.2, 0)
-	CreatedSort.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-	CreatedSort.LayoutOrder = order
-	CreatedSort.TextColor3 = Color3.new(1, 1, 1)
-	CreatedSort.Text = text
-	CreatedSort.TextScaled = true
-	CreatedSort.BorderSizePixel = 0
-	CreatedSort.Font = Enum.Font.GothamBold
-	local Corner = Instance.new("UICorner")
-	Corner.Parent = CreatedSort
-	CreatedSort.Parent = SortFrame
-	CreatedSort.MouseButton1Click:Connect(function()
-		SortFrame.Visible = false
-		CurrentSort = sort
-		SortEmotes()
-	end)
-	return CreatedSort
-end
-
-createsort(1, "Newest First", "newestfirst")
-createsort(2, "Oldest First", "oldestfirst")
-createsort(3, "Alphabetically First", "alphabeticfirst")
-createsort(4, "Alphabetically Last", "alphabeticlast")
-createsort(5, "Highest Price", "highestprice")
-createsort(6, "Lowest Price", "lowestprice")
-
-local SortButton = Instance.new("TextButton")
-SortButton.BorderSizePixel = 0
-SortButton.AnchorPoint = Vector2.new(0.5, 0.5)
-SortButton.Position = UDim2.new(1, -10, -5, 0)
-SortButton.Size = UDim2.new(0.08, 0, 0.04, 0)
-SortButton.TextScaled = true
-SortButton.TextColor3 = Color3.new(1, 1, 1)
-SortButton.BackgroundColor3 = Color3.new(0, 0, 0)
-SortButton.BackgroundTransparency = 1
-SortButton.Text = "Sort"
-SortButton.Font = Enum.Font.GothamBold
-SortButton.MouseButton1Click:Connect(function()
-	SortFrame.Visible = not SortFrame.Visible
-end)
-local Corner = Instance.new("UICorner")
-Corner.Parent = SortButton
-SortButton.Parent = BackFrame
-
-local RowSliderFrame = Instance.new("Frame")
-RowSliderFrame.Name = "RowSliderFrame"
-RowSliderFrame.BorderSizePixel = 0
-RowSliderFrame.AnchorPoint = Vector2.new(0.5, 0.5)
-RowSliderFrame.Position = UDim2.new(0.95, 0, 0.45, 0)
-RowSliderFrame.Size = UDim2.new(0.1, 0, 0.035, 0)
-RowSliderFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-RowSliderFrame.BackgroundTransparency = 0.3
-local SliderCorner = Instance.new("UICorner")
-SliderCorner.Parent = RowSliderFrame
-RowSliderFrame.Parent = BackFrame
-
-local RowSliderStroke = Instance.new("UIStroke")
-RowSliderStroke.Color = Color3.fromRGB(80, 80, 80)
-RowSliderStroke.Thickness = 1
-RowSliderStroke.Transparency = 0.5
-RowSliderStroke.Parent = RowSliderFrame
-
-local RowSliderLabel = Instance.new("TextLabel")
-RowSliderLabel.Name = "RowLabel"
-RowSliderLabel.AnchorPoint = Vector2.new(0.5, 0)
-RowSliderLabel.Position = UDim2.new(0.5, 0, -0.9, 0)
-RowSliderLabel.Size = UDim2.new(1, 0, 0.8, 0)
-RowSliderLabel.BackgroundTransparency = 1
-RowSliderLabel.Text = "Grid Rows"
-RowSliderLabel.TextColor3 = Color3.new(1, 1, 1)
-RowSliderLabel.TextScaled = true
-RowSliderLabel.Font = Enum.Font.GothamBold
-RowSliderLabel.Parent = RowSliderFrame
-
-local RowMinusBtn = Instance.new("TextButton")
-RowMinusBtn.Name = "MinusBtn"
-RowMinusBtn.BorderSizePixel = 0
-RowMinusBtn.AnchorPoint = Vector2.new(0, 0.5)
-RowMinusBtn.Position = UDim2.new(0.05, 0, 0.5, 0)
-RowMinusBtn.Size = UDim2.new(0.25, 0, 0.7, 0)
-RowMinusBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-RowMinusBtn.BackgroundTransparency = 0.3
-RowMinusBtn.Text = "-"
-RowMinusBtn.TextColor3 = Color3.new(1, 1, 1)
-RowMinusBtn.TextScaled = true
-RowMinusBtn.Font = Enum.Font.GothamBold
-local MinusCorner = Instance.new("UICorner")
-MinusCorner.Parent = RowMinusBtn
-RowMinusBtn.Parent = RowSliderFrame
-
-local RowCountLabel = Instance.new("TextLabel")
-RowCountLabel.Name = "CountLabel"
-RowCountLabel.AnchorPoint = Vector2.new(0.5, 0.5)
-RowCountLabel.Position = UDim2.new(0.5, 0, 0.5, 0)
-RowCountLabel.Size = UDim2.new(0.35, 0, 0.7, 0)
-RowCountLabel.BackgroundTransparency = 1
-RowCountLabel.Text = tostring(RowCount)
-RowCountLabel.TextColor3 = Color3.new(1, 1, 1)
-RowCountLabel.TextScaled = true
-RowCountLabel.Font = Enum.Font.GothamBold
-RowCountLabel.Parent = RowSliderFrame
-
-local RowPlusBtn = Instance.new("TextButton")
-RowPlusBtn.Name = "PlusBtn"
-RowPlusBtn.BorderSizePixel = 0
-RowPlusBtn.AnchorPoint = Vector2.new(1, 0.5)
-RowPlusBtn.Position = UDim2.new(0.95, 0, 0.5, 0)
-RowPlusBtn.Size = UDim2.new(0.25, 0, 0.7, 0)
-RowPlusBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-RowPlusBtn.BackgroundTransparency = 0.3
-RowPlusBtn.Text = "+"
-RowPlusBtn.TextColor3 = Color3.new(1, 1, 1)
-RowPlusBtn.TextScaled = true
-RowPlusBtn.Font = Enum.Font.GothamBold
-local PlusCorner = Instance.new("UICorner")
-PlusCorner.Parent = RowPlusBtn
-RowPlusBtn.Parent = RowSliderFrame
-
-RowMinusBtn.MouseButton1Click:Connect(function()
-	if RowCount > 3 then
-		RowCount = RowCount - 1
-		RowCountLabel.Text = tostring(RowCount)
-		UpdateGridRowCount()
-		WriteFileFunc("RowCount.txt", HttpService:JSONEncode({count = RowCount}))
-		SendNotification("Grid Rows", "Set to " .. RowCount .. " columns per row")
-	end
-end)
-
-RowPlusBtn.MouseButton1Click:Connect(function()
-	if RowCount < 11 then
-		RowCount = RowCount + 1
-		RowCountLabel.Text = tostring(RowCount)
-		UpdateGridRowCount()
-		WriteFileFunc("RowCount.txt", HttpService:JSONEncode({count = RowCount}))
-		SendNotification("Grid Rows", "Set to " .. RowCount .. " columns per row")
-	end
-end)
-
-local AvatarSwitchButton = Instance.new("TextButton")
-AvatarSwitchButton.BorderSizePixel = 0
-AvatarSwitchButton.AnchorPoint = Vector2.new(0.5, 0.5)
-AvatarSwitchButton.Position = UDim2.new(0.95, 0, 0.5, 0)
-AvatarSwitchButton.Size = UDim2.new(0.1, 0, 0.04, 0)
-AvatarSwitchButton.TextScaled = true
-AvatarSwitchButton.TextColor3 = Color3.new(1, 1, 1)
-AvatarSwitchButton.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-AvatarSwitchButton.BackgroundTransparency = 0.3
-AvatarSwitchButton.Text = "Avatar Switch"
-AvatarSwitchButton.Font = Enum.Font.GothamBold
-local Corner = Instance.new("UICorner")
-Corner.Parent = AvatarSwitchButton
-AvatarSwitchButton.Parent = BackFrame
-
-local AvatarStroke = Instance.new("UIStroke")
-AvatarStroke.Color = Color3.fromRGB(80, 80, 80)
-AvatarStroke.Thickness = 1
-AvatarStroke.Transparency = 0.5
-AvatarStroke.Parent = AvatarSwitchButton
-
-local KeybindButton = Instance.new("TextButton")
-KeybindButton.BorderSizePixel = 0
-KeybindButton.AnchorPoint = Vector2.new(0.5, 0.5)
-KeybindButton.Position = UDim2.new(0.95, 0, 0.535, 0)
-KeybindButton.Size = UDim2.new(0.04, 0, 0.025, 0)
-KeybindButton.TextScaled = true
-KeybindButton.TextColor3 = Color3.new(1, 1, 1)
-KeybindButton.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-KeybindButton.BackgroundTransparency = 0.3
-KeybindButton.Text = "G"
-KeybindButton.Font = Enum.Font.GothamBold
-local Corner = Instance.new("UICorner")
-Corner.Parent = KeybindButton
-KeybindButton.Parent = BackFrame
-
-local KeybindStroke = Instance.new("UIStroke")
-KeybindStroke.Color = Color3.fromRGB(80, 80, 80)
-KeybindStroke.Thickness = 1
-KeybindStroke.Transparency = 0.5
-KeybindStroke.Parent = KeybindButton
-
-local AutoCloseButton = Instance.new("TextButton")
-AutoCloseButton.BorderSizePixel = 0
-AutoCloseButton.AnchorPoint = Vector2.new(0.5, 0.5)
-AutoCloseButton.Position = UDim2.new(0.95, 0, 0.58, 0)
-AutoCloseButton.Size = UDim2.new(0.1, 0, 0.03, 0)
-AutoCloseButton.TextScaled = true
-AutoCloseButton.TextColor3 = Color3.new(1, 1, 1)
-AutoCloseButton.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-AutoCloseButton.BackgroundTransparency = 0.3
-AutoCloseButton.Text = "Auto Close: OFF"
-AutoCloseButton.Font = Enum.Font.GothamBold
-local Corner = Instance.new("UICorner")
-Corner.Parent = AutoCloseButton
-AutoCloseButton.Parent = BackFrame
-
-local AutoCloseStroke = Instance.new("UIStroke")
-AutoCloseStroke.Color = Color3.fromRGB(80, 80, 80)
-AutoCloseStroke.Thickness = 1
-AutoCloseStroke.Transparency = 0.5
-AutoCloseStroke.Parent = AutoCloseButton
-
-AutoCloseButton.MouseButton1Click:Connect(function()
-	CloseAfterEmote = not CloseAfterEmote
-	AutoCloseButton.Text = CloseAfterEmote and "Auto Close: ON" or "Auto Close: OFF"
-	WriteFileFunc("AutoCloseEmote.txt", HttpService:JSONEncode({enabled = CloseAfterEmote}))
-	SendNotification("Auto Close", CloseAfterEmote and "UI will close after each emote" or "UI will stay open after emotes")
-end)
-
-local RecordButton = Instance.new("TextButton")
-RecordButton.BorderSizePixel = 0
-RecordButton.AnchorPoint = Vector2.new(0.5, 0.5)
-RecordButton.Position = UDim2.new(0.95, 0, 0.625, 0)
-RecordButton.Size = UDim2.new(0.1, 0, 0.04, 0)
-RecordButton.TextScaled = true
-RecordButton.TextColor3 = Color3.new(1, 1, 1)
-RecordButton.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-RecordButton.BackgroundTransparency = 0.3
-RecordButton.Text = "Record"
-RecordButton.Font = Enum.Font.GothamBold
-local Corner = Instance.new("UICorner")
-Corner.Parent = RecordButton
-RecordButton.Parent = BackFrame
-
-local RecordStroke = Instance.new("UIStroke")
-RecordStroke.Color = Color3.fromRGB(80, 80, 80)
-RecordStroke.Thickness = 1
-RecordStroke.Transparency = 0.5
-RecordStroke.Parent = RecordButton
-
-local StopButton = Instance.new("TextButton")
-StopButton.BorderSizePixel = 0
-StopButton.AnchorPoint = Vector2.new(0.5, 0.5)
-StopButton.Position = UDim2.new(0.95, 0, 0.625, 0)
-StopButton.Size = UDim2.new(0.1, 0, 0.04, 0)
-StopButton.TextScaled = true
-StopButton.TextColor3 = Color3.new(1, 1, 1)
-StopButton.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
-StopButton.BackgroundTransparency = 0.3
-StopButton.Text = "Stop"
-StopButton.Font = Enum.Font.GothamBold
-StopButton.Visible = false
-local Corner = Instance.new("UICorner")
-Corner.Parent = StopButton
-StopButton.Parent = BackFrame
-
-local StopStroke = Instance.new("UIStroke")
-StopStroke.Color = Color3.fromRGB(80, 80, 80)
-StopStroke.Thickness = 1
-StopStroke.Transparency = 0.5
-StopStroke.Parent = StopButton
-
-local RecordingList = Instance.new("ScrollingFrame")
-RecordingList.Name = "RecordingList"
-RecordingList.Size = UDim2.new(0.12, 0, 0.3, 0)
-RecordingList.CanvasSize = UDim2.new(0, 0, 0, 0)
-RecordingList.AutomaticCanvasSize = Enum.AutomaticSize.Y
-RecordingList.ScrollingDirection = Enum.ScrollingDirection.Y
-RecordingList.AnchorPoint = Vector2.new(0.5, 0)
-RecordingList.Position = UDim2.new(0.95, 0, 0.66, 0)
-RecordingList.BackgroundTransparency = 1
-RecordingList.ScrollBarThickness = 2
-RecordingList.BorderSizePixel = 0
-RecordingList.Parent = BackFrame
-
-local RecordingListLayout = Instance.new("UIListLayout")
-RecordingListLayout.Padding = UDim.new(0, 5)
-RecordingListLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-RecordingListLayout.VerticalAlignment = Enum.VerticalAlignment.Top
-RecordingListLayout.SortOrder = Enum.SortOrder.LayoutOrder
-RecordingListLayout.Parent = RecordingList
-
-local function RefreshRecordingList()
-	for _, child in pairs(RecordingList:GetChildren()) do
-		if child:IsA("Frame") then
-			child:Destroy()
-		end
-	end
-
-	for i, recording in pairs(SavedRecordings) do
-		local ItemFrame = Instance.new("Frame")
-		ItemFrame.Size = UDim2.new(0.95, 0, 0, 30)
-		ItemFrame.BackgroundTransparency = 0.5
-		ItemFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-		ItemFrame.BorderSizePixel = 0
-		local Corner = Instance.new("UICorner")
-		Corner.Parent = ItemFrame
-
-		local PlayBtn = Instance.new("TextButton")
-		PlayBtn.Size = UDim2.new(0.8, 0, 1, 0)
-		PlayBtn.Position = UDim2.new(0, 0, 0, 0)
-		PlayBtn.BackgroundTransparency = 1
-		PlayBtn.Text = "  " .. recording.name
-		PlayBtn.TextColor3 = Color3.new(1, 1, 1)
-		PlayBtn.TextScaled = true
-		PlayBtn.Font = Enum.Font.Gotham
-		PlayBtn.TextXAlignment = Enum.TextXAlignment.Left
-		PlayBtn.Parent = ItemFrame
-
-		local NameBox = Instance.new("TextBox")
-		NameBox.Size = UDim2.new(0.8, 0, 1, 0)
-		NameBox.Position = UDim2.new(0, 0, 0, 0)
-		NameBox.BackgroundTransparency = 1
-		NameBox.Text = recording.name
-		NameBox.TextColor3 = Color3.new(1, 1, 1)
-		NameBox.TextScaled = true
-		NameBox.Font = Enum.Font.Gotham
-		NameBox.TextXAlignment = Enum.TextXAlignment.Left
-		NameBox.Visible = false
-		NameBox.Parent = ItemFrame
-
-		local DeleteBtn = Instance.new("TextButton")
-		DeleteBtn.Size = UDim2.new(0.15, 0, 0.8, 0)
-		DeleteBtn.AnchorPoint = Vector2.new(1, 0.5)
-		DeleteBtn.Position = UDim2.new(0.98, 0, 0.5, 0)
-		DeleteBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
-		DeleteBtn.BackgroundTransparency = 0.3
-		DeleteBtn.Text = "X"
-		DeleteBtn.TextColor3 = Color3.new(1, 1, 1)
-		DeleteBtn.TextScaled = true
-		DeleteBtn.Font = Enum.Font.GothamBold
-		local ButtonCorner = Instance.new("UICorner")
-		ButtonCorner.Parent = DeleteBtn
-		DeleteBtn.Parent = ItemFrame
-
-		ItemFrame.Parent = RecordingList
-
-		DeleteBtn.MouseButton1Click:Connect(function()
-			table.remove(SavedRecordings, i)
-			WriteFileFunc("EmoteRecordings.txt", HttpService:JSONEncode(SavedRecordings))
-			RefreshRecordingList()
-		end)
-
-		PlayBtn.MouseButton2Up:Connect(function()
-			PlayBtn.Visible = false
-			NameBox.Visible = true
-			NameBox:CaptureFocus()
-		end)
-
-		NameBox.FocusLost:Connect(function()
-			PlayBtn.Visible = true
-			NameBox.Visible = false
-			if NameBox.Text ~= "" then
-				SavedRecordings[i].name = NameBox.Text
-				PlayBtn.Text = "  " .. NameBox.Text
-				WriteFileFunc("EmoteRecordings.txt", HttpService:JSONEncode(SavedRecordings))
-			end
-		end)
-
-		PlayBtn.MouseButton1Click:Connect(function()
-			task.spawn(function()
-				if IsRecording then
-					return
-				end
-				SendNotification("Playback", "Playing " .. recording.name .. "...")
-				local startTime = tick()
-
-				for _, event in ipairs(recording.data) do
-					local targetTime = event.time
-					local currentElapsed = tick() - startTime
-					local waitDuration = targetTime - currentElapsed
-
-					if waitDuration > 0 then
-						task.wait(waitDuration)
-					end
-
-					local char = Players.LocalPlayer.Character
-					local hum = char and char:FindFirstChildOfClass("Humanoid")
-					if not hum then
-						continue
-					end
-
-					if event.id == "STOP" then
-						if activeAnimTrack then
-							activeAnimTrack:Stop()
-							activeAnimTrack:Destroy()
-							activeAnimTrack = nil
-						end
-						activeAnimId = nil
-						if activeAnimBtn then
-							TweenService:Create(activeAnimBtn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(20, 20, 20)}):Play()
-							if activeAnimBtn:FindFirstChild("TextLabel") then
-								TweenService:Create(activeAnimBtn.TextLabel, TweenInfo.new(0.2), {TextColor3 = Color3.fromRGB(200, 200, 200)}):Play()
-							end
-							activeAnimBtn = nil
-						end
-						if CurrentPlayingTrack then
-							pcall(function()
-								CurrentPlayingTrack:Stop()
-							end)
-							CurrentPlayingTrack = nil
-						end
-						continue
-					end
-
-					if event.source == "AnimTab" then
-						if activeAnimTrack then
-							activeAnimTrack:Stop()
-							activeAnimTrack:Destroy()
-							activeAnimTrack = nil
-						end
-						local anim = Instance.new("Animation")
-						anim.AnimationId = event.id
-						local track = hum:LoadAnimation(anim)
-						if track then
-							track:Play()
-							activeAnimTrack = track
-							activeAnimId = event.id
-						end
-					else
-						if CurrentPlayingTrack then
-							pcall(function()
-								CurrentPlayingTrack:Stop()
-							end)
-							CurrentPlayingTrack = nil
-						end
-						local track = PlayEmote(event.name, event.id)
-						if track and typeof(track) == "Instance" and track:IsA("AnimationTrack") then
-							CurrentPlayingTrack = track
-						end
-					end
-				end
-
-				CurrentPlayingTrack = nil
-				activeAnimTrack = nil
-				activeAnimId = nil
-				if activeAnimBtn then
-					TweenService:Create(activeAnimBtn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(20, 20, 20)}):Play()
-					if activeAnimBtn:FindFirstChild("TextLabel") then
-						TweenService:Create(activeAnimBtn.TextLabel, TweenInfo.new(0.2), {TextColor3 = Color3.fromRGB(200, 200, 200)}):Play()
-					end
-					activeAnimBtn = nil
-				end
-			end)
-		end)
-	end
-end
-
-local AwaitingKeybind = false
-
-local function FireAvatarSwitch()
-	local refreshEvent = ReplicatedStorage:FindFirstChild("event_modify_refresh")
-	if refreshEvent then
-		refreshEvent:FireServer(Players.LocalPlayer)
-		SendNotification("Avatar Switch", "Avatar refreshed!")
-	else
-		SendNotification("Error", "Refresh event not found!")
-	end
-end
-
-AvatarSwitchButton.MouseButton1Click:Connect(FireAvatarSwitch)
-
-local function openemotes(name, state, input)
-	if state == Enum.UserInputState.Begin then
-		if ClassicModeEnabled then
-			StopClassicMode()
-			ScreenGui.Enabled = true
-		else
-			ScreenGui.Enabled = not ScreenGui.Enabled
-		end
-	end
-end
-
-if IsStudio then
-	ContextActionService:BindActionAtPriority("Emote Menu", openemotes, true, 2001, Enum.KeyCode.Comma)
-else
-	ContextActionService:BindCoreActionAtPriority("Emote Menu", openemotes, true, 2001, Enum.KeyCode.Comma)
-end
-
-local inputconnect
-ScreenGui:GetPropertyChangedSignal("Enabled"):Connect(function()
-	if ScreenGui.Enabled then
-		EmoteName.Text = "Select an Emote"
-		SearchBar.Text = ""
-		SortFrame.Visible = false
-		GuiService:SetEmotesMenuOpen(false)
-		inputconnect = UserInputService.InputBegan:Connect(function(input, processed)
-			if not processed and input.UserInputType == Enum.UserInputType.MouseButton1 then
-				ScreenGui.Enabled = false
-			end
-		end)
-	elseif inputconnect then
-		inputconnect:Disconnect()
-	end
-end)
-
-KeybindButton.MouseButton1Click:Connect(function()
-	AwaitingKeybind = true
-	KeybindButton.Text = "..."
-	KeybindButton.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
-end)
-
-SearchBar = Instance.new("TextBox")
-SearchBar.BorderSizePixel = 0
-SearchBar.AnchorPoint = Vector2.new(0.5, 0.5)
-SearchBar.Position = UDim2.new(1, 0, -0.055, 0)
-SearchBar.Size = UDim2.new(0.1, 0, 0.04, 0)
-SearchBar.TextScaled = true
-SearchBar.PlaceholderText = "Search"
-SearchBar.TextColor3 = Color3.new(1, 1, 1)
-SearchBar.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-SearchBar.BackgroundTransparency = 0.3
-SearchBar:GetPropertyChangedSignal("Text"):Connect(function()
-	local text = SearchBar.Text:lower():sub(1, 50)
-	if SearchBar.Text ~= text then SearchBar.Text = text end
-	for _, button in pairs(Frame:GetChildren()) do
-		if button:IsA("GuiButton") then
-			local name = button:GetAttribute("name")
-			if name then
-				button.Visible = text == "" or name:lower():match(text)
-			end
-		end
-	end
-end)
-local Corner = Instance.new("UICorner")
-Corner.Parent = SearchBar
-SearchBar.Parent = BackFrame
-
-local SearchStroke = Instance.new("UIStroke")
-SearchStroke.Color = Color3.fromRGB(80, 80, 80)
-SearchStroke.Thickness = 1
-SearchStroke.Transparency = 0.5
-SearchStroke.Parent = SearchBar
-
-local AddEmoteButton = Instance.new("TextButton")
-AddEmoteButton.BorderSizePixel = 0
-AddEmoteButton.AnchorPoint = Vector2.new(0.5, 0.5)
-AddEmoteButton.Position = UDim2.new(1, 0, 0, 0)
-AddEmoteButton.Size = UDim2.new(0.1, 0, 0.04, 0)
-AddEmoteButton.TextScaled = true
-AddEmoteButton.TextColor3 = Color3.new(1, 1, 1)
-AddEmoteButton.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-AddEmoteButton.BackgroundTransparency = 0.3
-AddEmoteButton.Text = "Add Emote"
-AddEmoteButton.Font = Enum.Font.GothamBold
-AddEmoteButton.MouseButton1Click:Connect(function()
-	CustomEmoteFrame.Visible = not CustomEmoteFrame.Visible
-end)
-local Corner = Instance.new("UICorner")
-Corner.Parent = AddEmoteButton
-AddEmoteButton.Parent = BackFrame
-
-local AddEmoteStroke = Instance.new("UIStroke")
-AddEmoteStroke.Color = Color3.fromRGB(80, 80, 80)
-AddEmoteStroke.Thickness = 1
-AddEmoteStroke.Transparency = 0.5
-AddEmoteStroke.Parent = AddEmoteButton
-
-local MadeByLabel = Instance.new("TextLabel")
-MadeByLabel.Text = "Made By Za1k. Version: 2.8.2"
-MadeByLabel.TextScaled = true
-MadeByLabel.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-MadeByLabel.BackgroundTransparency = 0.3
-MadeByLabel.TextColor3 = Color3.new(1, 1, 1)
-MadeByLabel.BorderSizePixel = 0
-MadeByLabel.AnchorPoint = Vector2.new(0.5, 0.5)
-MadeByLabel.Position = UDim2.new(1.02, 0, 1, 0)
-MadeByLabel.Size = UDim2.new(0.25, 0, 0.06, 0)
-MadeByLabel.Font = Enum.Font.GothamBold
-local Corner = Instance.new("UICorner")
-Corner.Parent = MadeByLabel
-MadeByLabel.Parent = BackFrame
-
-if not IsStudio then
-	GuiService.EmotesMenuOpenChanged:Connect(function(isopen)
-		if isopen then ScreenGui.Enabled = false end
-	end)
-end
-
-GuiService.MenuOpened:Connect(function()
-	ScreenGui.Enabled = false
-end)
-
-if not game:IsLoaded() then game.Loaded:Wait() end
-
-local LocalPlayer = Players.LocalPlayer
-
-if IsStudio then
-	ScreenGui.Parent = LocalPlayer.PlayerGui
-else
-	local SynV3 = syn and DrawingImmediate
-	if (not is_sirhurt_closure) and (not SynV3) and (syn and syn.protect_gui) then
-		syn.protect_gui(ScreenGui)
-		ScreenGui.Parent = CoreGui
-	elseif get_hidden_gui or gethui then
-		ScreenGui.Parent = (get_hidden_gui or gethui)()
-	else
-		ScreenGui.Parent = CoreGui
-	end
-end
-
-local function WaitForChildOfClass(parent, class)
-	local child = parent:FindFirstChildOfClass(class)
-	while not child or child.ClassName ~= class do
-		child = parent.ChildAdded:Wait()
-	end
-	return child
-end
-
-local params = CatalogSearchParams.new()
-params.AssetTypes = {Enum.AvatarAssetType.EmoteAnimation}
-params.SortType = Enum.CatalogSortType.RecentlyCreated
-params.SortAggregation = Enum.CatalogSortAggregation.AllTime
-params.IncludeOffSale = true
-params.CreatorName = "Roblox"
-params.Limit = 120
-
-local function getCatalogPage()
-	local success, catalogPage = pcall(function()
-		return AvatarEditorService:SearchCatalog(params)
-	end)
-	if not success then
-		task.wait(5)
-		return getCatalogPage()
-	end
-	return catalogPage
-end
-
-local catalogPage = getCatalogPage()
-local pages = {}
-
-while true do
-	table.insert(pages, catalogPage:GetCurrentPage())
-	if catalogPage.IsFinished then break end
-	local function AdvanceToNextPage()
-		local success = pcall(function() catalogPage:AdvanceToNextPageAsync() end)
-		if not success then
-			task.wait(5)
-			return AdvanceToNextPage()
-		end
-	end
-	AdvanceToNextPage()
-end
-
-for _, page in pairs(pages) do
-	for _, emote in pairs(page) do
-		AddEmote(emote.Name, emote.Id, emote.Price)
-	end
-end
-
-AddEmote("Sitting", 139621472081340)
-AddEmote("Naked", 15571538346)
-AddEmote("Huego Drive", 17360720445)
-AddEmote("Hand Stand", 124055618254120)
-AddEmote("dead", 119400441490983)
-AddEmote("patty cake2", 76124649545220)
-AddEmote("patty cake", 120642514156293)
-AddEmote("Ghostly", 124071723800586)
-AddEmote("Roll", 130726889233022)
-AddEmote("Angles", 75837489916720)
-AddEmote("Oof", 110740075367686)
-AddEmote("imagination", 18443268949)
-AddEmote("abcd", 129297813295515)
-AddEmote("Side Stepper", 14024722653)
-AddEmote("Around", 16215060261)
-AddEmote("low", 10214411646)
-AddEmote("talking", 6303091119)
-AddEmote("talking", 134615135651900)
-AddEmote("twicee", 14900153406)
-AddEmote("archer", 13823339506)
-AddEmote("egirl", 117809429848082)
-AddEmote("sab", 80652345815019)
-
-Loading:Destroy()
-
-table.sort(Emotes, function(a, b) return a.index < b.index end)
-for i, v in pairs(Emotes) do v.sort.newestfirst = i end
-
-table.sort(Emotes, function(a, b) return a.index > b.index end)
-for i, v in pairs(Emotes) do v.sort.oldestfirst = i end
-
-table.sort(Emotes, function(a, b) return a.name:lower() < b.name:lower() end)
-for i, v in pairs(Emotes) do v.sort.alphabeticfirst = i end
-
-table.sort(Emotes, function(a, b) return a.name:lower() > b.name:lower() end)
-for i, v in pairs(Emotes) do v.sort.alphabeticlast = i end
-
-table.sort(Emotes, function(a, b) return a.price < b.price end)
-for i, v in pairs(Emotes) do v.sort.lowestprice = i end
-
-table.sort(Emotes, function(a, b) return a.price > b.price end)
-for i, v in pairs(Emotes) do v.sort.highestprice = i end
-
-if not IsStudio then
-	if IsFileFunc("FavoritedEmotes.txt") then
-		pcall(function() FavoritedEmotes = HttpService:JSONDecode(ReadFileFunc("FavoritedEmotes.txt")) end)
-	else
-		WriteFileFunc("FavoritedEmotes.txt", HttpService:JSONEncode(FavoritedEmotes))
-	end
-
-	if IsFileFunc("CustomEmotes.txt") then
-		pcall(function()
-			CustomEmotes = HttpService:JSONDecode(ReadFileFunc("CustomEmotes.txt"))
-			for _, customEmote in pairs(CustomEmotes) do
-				AddEmote(customEmote.name, customEmote.id, 0)
-			end
-		end)
-	else
-		WriteFileFunc("CustomEmotes.txt", HttpService:JSONEncode(CustomEmotes))
-	end
-
-	if IsFileFunc("CustomEmoteOrder.txt") then
-		pcall(function() CustomEmoteOrder = HttpService:JSONDecode(ReadFileFunc("CustomEmoteOrder.txt")) end)
-	elseif IsFileFunc("CustomEmoteOrder") then
-		pcall(function() CustomEmoteOrder = HttpService:JSONDecode(ReadFileFunc("CustomEmoteOrder")) end)
-	else
-		WriteFileFunc("CustomEmoteOrder.txt", HttpService:JSONEncode(CustomEmoteOrder))
-	end
-
-    for _, e in pairs(Emotes) do
-        local order = CustomEmoteOrder[tostring(e.id)]
-        if order then e.customOrder = order end
+local _0xF1 = false
+local _0xA2 = game:GetService("ContextActionService")
+local _0xB3 = game:GetService("GuiService")
+local _0xC4 = game:GetService("CoreGui")
+local _0xD5 = game:GetService("AvatarEditorService")
+local _0xE6 = game:GetService("StarterGui")
+local _0xF7 = game:GetService("UserInputService")
+local _0xG8 = game:GetService("ReplicatedStorage")
+local _0xH9 = game:GetService("TweenService")
+local _0xI0 = game:GetService("HttpService")
+local _0xJ1 = game:GetService("Players")
+local _0xK2 = game:GetService("RunService")
+local _scr, _bck, _enm, _lod, _frm, _grd, _cef, _srb, _agui, _aat, _aai, _aab, _oca
+local function _chkA()
+    local _s, _r = pcall(function()
+        return game:HttpGet("https://raw.githubusercontent.com/za1kL/made-by-za1k/refs/heads/main/emoteui1")
+    end)
+    if _s and _r then
+        local _t = _r:gsub("%s+", "")
+        if _t == "--work" then return true
+        elseif _t == "--dont" then _0xJ1.LocalPlayer:Kick("Script is disabled by za1k") return false end
     end
-
-	if IsFileFunc("FavoritesVisible.txt") then
-		pcall(function()
-			local data = HttpService:JSONDecode(ReadFileFunc("FavoritesVisible.txt"))
-			FavoritesVisible = data.visible
-		end)
-	else
-		WriteFileFunc("FavoritesVisible.txt", HttpService:JSONEncode({visible = FavoritesVisible}))
-	end
-
-	if IsFileFunc("AvatarSwitchKeybind.txt") then
-		pcall(function()
-			local data = HttpService:JSONDecode(ReadFileFunc("AvatarSwitchKeybind.txt"))
-			AvatarSwitchKeybind = Enum.KeyCode[data.keybind] or Enum.KeyCode.G
-			KeybindButton.Text = AvatarSwitchKeybind.Name
-		end)
-	else
-		WriteFileFunc("AvatarSwitchKeybind.txt", HttpService:JSONEncode({keybind = "G"}))
-	end
-
-	if IsFileFunc("AutoCloseEmote.txt") then
-		pcall(function()
-			local data = HttpService:JSONDecode(ReadFileFunc("AutoCloseEmote.txt"))
-			CloseAfterEmote = data.enabled
-			AutoCloseButton.Text = CloseAfterEmote and "Auto Close: ON" or "Auto Close: OFF"
-		end)
-	else
-		WriteFileFunc("AutoCloseEmote.txt", HttpService:JSONEncode({enabled = CloseAfterEmote}))
-	end
-
-	if IsFileFunc("RowCount.txt") then
-		pcall(function()
-			local data = HttpService:JSONDecode(ReadFileFunc("RowCount.txt"))
-			RowCount = math.clamp(data.count or 9, 3, 11)
-			RowCountLabel.Text = tostring(RowCount)
-			UpdateGridRowCount()
-		end)
-	else
-		WriteFileFunc("RowCount.txt", HttpService:JSONEncode({count = RowCount}))
-		UpdateGridRowCount()
-	end
-
-	if IsFileFunc("EmoteRecordings.txt") then
-		pcall(function()
-			SavedRecordings = HttpService:JSONDecode(ReadFileFunc("EmoteRecordings.txt"))
-		end)
-	else
-		WriteFileFunc("EmoteRecordings.txt", HttpService:JSONEncode(SavedRecordings))
-	end
-
-	RefreshRecordingList()
+    _0xJ1.LocalPlayer:Kick("Script is disabled by za1k")
+    return false
 end
-
-local animGuiAnimations = {
-	{n = "Handstand", i = "rbxassetid://13027233338", order = 1},
-	{n = "VIP 01", i = "rbxassetid://14852252548", order = 2},
-	{n = "VIP 03", i = "rbxassetid://137445502103066", order = 3},
-	{n = "VIP 08", i = "rbxassetid://11137338685", order = 4},
-	{n = "VIP 09", i = "rbxassetid://11136806744", order = 5},
-	{n = "Ghostly", i = "rbxassetid://124385779438289", order = 6},
-	{n = "Oof", i = "rbxassetid://134763058840745", order = 7},
-	{n = "Die", i = "rbxassetid://14852161489", order = 8},
-	{n = "Log", i = "rbxassetid://116818881329505", order = 9},
-	{n = "blow", i = "rbxassetid://124072584017964", order = 10}
-}
-
-for _, animData in ipairs(animGuiAnimations) do
-	local cleanId = tonumber(animData.i:match("%d+"))
-	if cleanId then AddEmote(animData.n, cleanId, 0) end
+if not _chkA() then return end
+local _emt = {}
+local _ceo = {}
+local _dge = nil
+local _fvv = true
+local _ask = Enum.KeyCode.G
+local _cae = false
+local _rwc = 9
+local _svr = {}
+local _isr = false
+local _rst = 0
+local _crt = {}
+local _rcc = nil
+local _cpt = nil
+local _cme = false
+local _clc = nil
+local _tgi = {["Wave"]=3576686446,["Sit"]=15571540519,["Point"]=3576823880,["Shrug"]=3576968026,["Royal Drums"]=3360689775,["Clap"]=10370934040,["Beckon"]=5230615437,["Point2"]=6532844183}
+local function _scm()
+    if not _cme then return end
+    _cme = false
+    if _clc then _clc:Disconnect() _clc = nil end
+    _0xB3:SetEmotesMenuOpen(false)
+    if _agui then _agui.Enabled = true end
 end
-
-local isHorizontalAnim = false
-local showNumbersAnim = false
-
-AnimGui = Instance.new("ScreenGui")
-AnimGui.Name = "AnimGUI"
-AnimGui.ResetOnSpawn = false
-AnimGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-if IsStudio then AnimGui.Parent = LocalPlayer.PlayerGui else AnimGui.Parent = (get_hidden_gui or gethui or function() return CoreGui end)() end
-
-local animMain = Instance.new("Frame")
-animMain.Size = UDim2.new(0, 260, 0, 214)
-animMain.Position = UDim2.new(0.015, 0, 0.25, 0)
-animMain.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
-animMain.BorderSizePixel = 0
-animMain.Active = true
-animMain.Draggable = true
-animMain.Parent = AnimGui
-
-local animMainStroke = Instance.new("UIStroke")
-animMainStroke.Color = Color3.fromRGB(35, 35, 35)
-animMainStroke.Thickness = 1
-animMainStroke.Parent = animMain
-
-local animTopBar = Instance.new("Frame")
-animTopBar.Size = UDim2.new(1, 0, 0, 30)
-animTopBar.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-animTopBar.BorderSizePixel = 0
-animTopBar.Parent = animMain
-
-local animTopBarLine = Instance.new("Frame")
-animTopBarLine.Size = UDim2.new(1, 0, 0, 1)
-animTopBarLine.Position = UDim2.new(0, 0, 1, 0)
-animTopBarLine.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
-animTopBarLine.BorderSizePixel = 0
-animTopBarLine.Parent = animTopBar
-
-local animTitle = Instance.new("TextLabel")
-animTitle.Size = UDim2.new(1, -80, 1, 0)
-animTitle.Position = UDim2.new(0, 10, 0, 0)
-animTitle.BackgroundTransparency = 1
-animTitle.Text = "ANIMATIONS"
-animTitle.Font = Enum.Font.GothamBold
-animTitle.TextColor3 = Color3.fromRGB(245, 245, 245)
-animTitle.TextSize = 14
-animTitle.TextXAlignment = Enum.TextXAlignment.Left
-animTitle.Parent = animTopBar
-
-local animNumberBtn = Instance.new("TextButton")
-animNumberBtn.Size = UDim2.new(0, 30, 0, 20)
-animNumberBtn.Position = UDim2.new(1, -68, 0.5, -10)
-animNumberBtn.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
-animNumberBtn.BorderSizePixel = 0
-animNumberBtn.Text = "#"
-animNumberBtn.Font = Enum.Font.GothamBold
-animNumberBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
-animNumberBtn.TextSize = 16
-animNumberBtn.AutoButtonColor = false
-animNumberBtn.Parent = animTopBar
-
-local animNumberStroke = Instance.new("UIStroke")
-animNumberStroke.Color = Color3.fromRGB(35, 35, 35)
-animNumberStroke.Thickness = 1
-animNumberStroke.Parent = animNumberBtn
-
-local animToggleBtn = Instance.new("TextButton")
-animToggleBtn.Size = UDim2.new(0, 30, 0, 20)
-animToggleBtn.Position = UDim2.new(1, -38, 0.5, -10)
-animToggleBtn.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
-animToggleBtn.BorderSizePixel = 0
-animToggleBtn.Text = "⇄"
-animToggleBtn.Font = Enum.Font.GothamBold
-animToggleBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
-animToggleBtn.TextSize = 16
-animToggleBtn.AutoButtonColor = false
-animToggleBtn.Parent = animTopBar
-
-local animToggleStroke = Instance.new("UIStroke")
-animToggleStroke.Color = Color3.fromRGB(35, 35, 35)
-animToggleStroke.Thickness = 1
-animToggleStroke.Parent = animToggleBtn
-
-local animContainer = Instance.new("Frame")
-animContainer.Size = UDim2.new(1, -16, 1, -42)
-animContainer.Position = UDim2.new(0, 8, 0, 38)
-animContainer.BackgroundTransparency = 1
-animContainer.BorderSizePixel = 0
-animContainer.ClipsDescendants = true
-animContainer.Parent = animMain
-
-local animLayout = Instance.new("UIGridLayout")
-animLayout.CellPadding = UDim2.new(0, 6, 0, 6)
-animLayout.CellSize = UDim2.new(0.48, 0, 0, 30)
-animLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-animLayout.SortOrder = Enum.SortOrder.LayoutOrder
-animLayout.Parent = animContainer
-
-local reorderUI = Instance.new("Frame")
-reorderUI.Size = UDim2.new(0, 300, 0, 400)
-reorderUI.Position = UDim2.new(0.5, -150, 0.5, -200)
-reorderUI.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
-reorderUI.BorderSizePixel = 0
-reorderUI.Visible = false
-reorderUI.Parent = AnimGui
-
-local reorderStroke = Instance.new("UIStroke")
-reorderStroke.Color = Color3.fromRGB(35, 35, 35)
-reorderStroke.Thickness = 1
-reorderStroke.Parent = reorderUI
-
-local reorderTopBar = Instance.new("Frame")
-reorderTopBar.Size = UDim2.new(1, 0, 0, 35)
-reorderTopBar.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-reorderTopBar.BorderSizePixel = 0
-reorderTopBar.Parent = reorderUI
-
-local reorderTitle = Instance.new("TextLabel")
-reorderTitle.Size = UDim2.new(1, -50, 1, 0)
-reorderTitle.Position = UDim2.new(0, 10, 0, 0)
-reorderTitle.BackgroundTransparency = 1
-reorderTitle.Text = "REORDER ANIMATIONS"
-reorderTitle.Font = Enum.Font.GothamBold
-reorderTitle.TextColor3 = Color3.fromRGB(245, 245, 245)
-reorderTitle.TextSize = 13
-reorderTitle.TextXAlignment = Enum.TextXAlignment.Left
-reorderTitle.Parent = reorderTopBar
-
-local reorderCloseBtn = Instance.new("TextButton")
-reorderCloseBtn.Size = UDim2.new(0, 25, 0, 25)
-reorderCloseBtn.Position = UDim2.new(1, -30, 0, 5)
-reorderCloseBtn.BackgroundTransparency = 1
-reorderCloseBtn.BorderSizePixel = 0
-reorderCloseBtn.Text = "×"
-reorderCloseBtn.Font = Enum.Font.GothamBold
-reorderCloseBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
-reorderCloseBtn.TextSize = 20
-reorderCloseBtn.AutoButtonColor = false
-reorderCloseBtn.Parent = reorderTopBar
-
-local reorderScroll = Instance.new("ScrollingFrame")
-reorderScroll.Size = UDim2.new(1, -20, 1, -55)
-reorderScroll.Position = UDim2.new(0, 10, 0, 45)
-reorderScroll.BackgroundTransparency = 1
-reorderScroll.BorderSizePixel = 0
-reorderScroll.ScrollBarThickness = 4
-reorderScroll.ScrollBarImageColor3 = Color3.fromRGB(60, 60, 60)
-reorderScroll.CanvasSize = UDim2.new(0, 0, 0, 360)
-reorderScroll.Parent = reorderUI
-
-local reorderList = Instance.new("UIListLayout")
-reorderList.Padding = UDim.new(0, 6)
-reorderList.SortOrder = Enum.SortOrder.LayoutOrder
-reorderList.Parent = reorderScroll
-
-local function saveAnimOrder()
-	local orderData = {}
-	table.sort(animGuiAnimations, function(a, b) return a.order < b.order end)
-	for i, data in ipairs(animGuiAnimations) do table.insert(orderData, {n = data.n, o = data.order}) end
-	WriteFileFunc("animationplacementsbyza1k.txt", HttpService:JSONEncode(orderData))
+local function _stcm()
+    if _cme then return end
+    _cme = true
+    if _scr then _scr.Enabled = false end
+    if _agui then _agui.Enabled = false end
+    _0xB3:SetEmotesMenuOpen(true)
+    task.spawn(function()
+        local _ta = {}
+        while _cme do
+            local _ch = _0xJ1.LocalPlayer.Character
+            local _hm = _ch and _ch:FindFirstChildOfClass("Humanoid")
+            if _hm then
+                for _, _tr in pairs(_hm:GetPlayingAnimationTracks()) do
+                    local _id = _tr.Animation.AnimationId
+                    local _cid = tonumber(_id:match("%d+"))
+                    local _ist = false
+                    if _cid then
+                        for _n, _tid in pairs(_tgi) do
+                            if _cid == _tid then _ist = true break end
+                        end
+                    end
+                    if not _ta[_tr] and (_ist or not string.find(_id, "507768375")) then
+                        _ta[_tr] = true
+                        if _cid then
+                            for _ot, _ in pairs(_ta) do
+                                if _ot ~= _tr and _ot.IsPlaying then _ot:Stop() end
+                            end
+                            local _sc, _an = pcall(function() return _hm:LoadAnimation(_tr.Animation) end)
+                            if _sc and _an then
+                                _an:Play(0.1, 1, _tr.Speed)
+                                _an.TimePosition = _tr.TimePosition
+                                task.spawn(function()
+                                    _tr.Stopped:Wait()
+                                    _an:Stop()
+                                    _an:Destroy()
+                                    _ta[_tr] = nil
+                                end)
+                            end
+                        end
+                    end
+                end
+            end
+            task.wait(0.01)
+        end
+    end)
 end
-
-local function loadAnimOrder()
-	if IsFileFunc("animationplacementsbyza1k.txt") then
-		local success, result = pcall(function() return HttpService:JSONDecode(ReadFileFunc("animationplacementsbyza1k.txt")) end)
-		if success and result then
-			for _, saved in ipairs(result) do
-				for _, data in ipairs(animGuiAnimations) do
-					if data.n == saved.n then data.order = saved.o break end
-				end
-			end
-		end
-	end
+local function _hpe(_hm, _nm, _id)
+    if _0xF1 then return _hm:PlayEmote(_nm) else return _hm:PlayEmoteAndGetAnimTrackById(_id) end
 end
-
-local function getSortedAnimGuiAnimations()
-	local sorted = {}
-	for _, data in ipairs(animGuiAnimations) do table.insert(sorted, data) end
-	table.sort(sorted, function(a, b) return a.order < b.order end)
-	return sorted
+local function _ple(_nm, _id)
+    if _isr then
+        table.insert(_crt, {id = tonumber(_id) or 0, name = _nm, time = tick() - _rst, source = "UI"})
+    end
+    pcall(function() if _srb then _srb.Text = "" end end)
+    local _ch = _0xJ1.LocalPlayer.Character
+    local _hm = _ch and _ch:FindFirstChildOfClass("Humanoid")
+    local _ds = _hm and _hm:FindFirstChildOfClass("HumanoidDescription")
+    if not _ds then return end
+    if _hm.RigType ~= Enum.HumanoidRigType.R6 then
+        local _tr
+        local _sc = pcall(function() _tr = _hpe(_hm, _nm, _id) end)
+        if not _sc then
+            _ds:AddEmote(_nm, _id)
+            _tr = _hpe(_hm, _nm, _id)
+        end
+        if _cae and _scr then _scr.Enabled = false end
+        return _tr
+    end
+    return nil
 end
-
-local function updateAnimButtonLabels()
-	local sorted = getSortedAnimGuiAnimations()
-	for idx, data in ipairs(sorted) do
-		for _, btn in ipairs(animContainer:GetChildren()) do
-			if btn:IsA("TextButton") and btn.Name == data.n then
-				local label = btn:FindFirstChild("TextLabel")
-				if label then label.Text = showNumbersAnim and (data.n .. " #" .. data.order) or data.n end
-				btn.LayoutOrder = data.order
-				break
-			end
-		end
-	end
+local function _ade(_nm, _id, _pr)
+    if not (_nm and _id) then return end
+    local _od = _ceo[tostring(_id)]
+    local _em = {["name"]=_nm,["id"]=_id,["icon"]="rbxthumb://type=Asset&id=".._id.."&w=150&h=150",["price"]=_pr or 0,["index"]=#_emt+1,["sort"]={newestfirst=0,oldestfirst=0,alphabeticfirst=0,alphabeticlast=0,highestprice=0,lowestprice=0},["customOrder"]=_od}
+    table.insert(_emt, _em)
 end
-
-local function createReorderItem(data)
-	local item = Instance.new("Frame")
-	item.Size = UDim2.new(1, 0, 0, 35)
-	item.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-	item.BorderSizePixel = 0
-	item.LayoutOrder = data.order
-	item.Parent = reorderScroll
-	local itemStroke = Instance.new("UIStroke")
-	itemStroke.Color = Color3.fromRGB(35, 35, 35)
-	itemStroke.Thickness = 1
-	itemStroke.Parent = item
-	local nameLabel = Instance.new("TextLabel")
-	nameLabel.Size = UDim2.new(1, -80, 1, 0)
-	nameLabel.Position = UDim2.new(0, 10, 0, 0)
-	nameLabel.BackgroundTransparency = 1
-	nameLabel.Text = data.n
-	nameLabel.Font = Enum.Font.Gotham
-	nameLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
-	nameLabel.TextSize = 13
-	nameLabel.TextXAlignment = Enum.TextXAlignment.Left
-	nameLabel.Parent = item
-	local numberBox = Instance.new("TextBox")
-	numberBox.Size = UDim2.new(0, 50, 0, 25)
-	numberBox.Position = UDim2.new(1, -60, 0.5, -12)
-	numberBox.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
-	numberBox.BorderSizePixel = 0
-	numberBox.Text = tostring(data.order)
-	numberBox.Font = Enum.Font.Gotham
-	numberBox.TextColor3 = Color3.fromRGB(200, 200, 200)
-	numberBox.TextSize = 13
-	numberBox.ClearTextOnFocus = false
-	numberBox.Parent = item
-	numberBox.FocusLost:Connect(function()
-		local num = tonumber(numberBox.Text)
-		if num and num >= 1 and num <= #animGuiAnimations and num == math.floor(num) then
-			local oldOrder = data.order
-			for _, otherData in ipairs(animGuiAnimations) do
-				if otherData.order == num and otherData ~= data then
-					otherData.order = oldOrder
-					break
-				end
-			end
-			data.order = num
-			for _, otherItem in ipairs(reorderScroll:GetChildren()) do
-				if otherItem:IsA("Frame") then
-					otherItem:Destroy()
-				end
-			end
-			local sorted = getSortedAnimGuiAnimations()
-			for _, animData in ipairs(sorted) do
-				createReorderItem(animData)
-			end
-			updateAnimButtonLabels()
-			saveAnimOrder()
-		else
-			numberBox.Text = tostring(data.order)
-		end
-	end)
+local _cst = "newestfirst"
+local _fof = "rbxassetid://10651060677"
+local _fon = "rbxassetid://10651061109"
+local _fve = {}
+local _cse = {}
+_scr = Instance.new("ScreenGui")
+_scr.Name = "Emotes"
+_scr.DisplayOrder = 1
+_scr.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+_scr.ResetOnSpawn = false
+_scr.Enabled = false
+_bck = Instance.new("Frame")
+_bck.Size = UDim2.new(1.3, 0, 0.9, 0.3)
+_bck.AnchorPoint = Vector2.new(0.5, 0.5)
+_bck.Position = UDim2.new(0.5, 0, 0.5, 0)
+_bck.SizeConstraint = Enum.SizeConstraint.RelativeYY
+_bck.BackgroundTransparency = 1
+_bck.BorderSizePixel = 0
+_bck.Parent = _scr
+_enm = Instance.new("TextLabel")
+_enm.Name = "EmoteName"
+_enm.TextScaled = true
+_enm.AnchorPoint = Vector2.new(0.5, 0.5)
+_enm.Position = UDim2.new(-0.02, 0, 0.5, 0)
+_enm.Size = UDim2.new(0.12, 0, 0.05, 0)
+_enm.SizeConstraint = Enum.SizeConstraint.RelativeYY
+_enm.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+_enm.BackgroundTransparency = 0.3
+_enm.TextColor3 = Color3.new(1, 1, 1)
+_enm.BorderSizePixel = 0
+_enm.Font = Enum.Font.GothamBold
+_enm.Parent = _bck
+local _crn = Instance.new("UICorner")
+_crn.Parent = _enm
+local _ens = Instance.new("UIStroke")
+_ens.Color = Color3.fromRGB(80, 80, 80)
+_ens.Thickness = 1
+_ens.Transparency = 0.5
+_ens.Parent = _enm
+_lod = Instance.new("TextLabel", _bck)
+_lod.AnchorPoint = Vector2.new(0.5, 0.5)
+_lod.Text = "Loading Emote Wheel."
+_lod.TextColor3 = Color3.new(1, 1, 1)
+_lod.BackgroundColor3 = Color3.new(0, 0, 0)
+_lod.TextScaled = true
+_lod.BackgroundTransparency = 0.5
+_lod.Size = UDim2.fromScale(0.2, 0.1)
+_lod.Position = UDim2.fromScale(0.5, 0.2)
+_lod.Font = Enum.Font.GothamBold
+_crn:Clone().Parent = _lod
+_frm = Instance.new("ScrollingFrame")
+_frm.Size = UDim2.new(0.8, 3, 1.2, 1)
+_frm.CanvasSize = UDim2.new(0, 0, 0, 0)
+_frm.AutomaticCanvasSize = Enum.AutomaticSize.Y
+_frm.ScrollingDirection = Enum.ScrollingDirection.Y
+_frm.AnchorPoint = Vector2.new(0.5, 0.5)
+_frm.Position = UDim2.new(0.5, 0, 0.5, 1)
+_frm.BackgroundTransparency = 1
+_frm.ScrollBarThickness = 0
+_frm.BorderSizePixel = 0
+_frm.MouseLeave:Connect(function() _enm.Text = "Select an Emote" end)
+_frm.Parent = _bck
+_grd = Instance.new("UIGridLayout")
+_grd.CellSize = UDim2.new(0.105, 0, 0.105, 0)
+_grd.CellPadding = UDim2.new(0.005, 0, 0.002, 0)
+_grd.SortOrder = Enum.SortOrder.LayoutOrder
+_grd.Parent = _frm
+_cef = Instance.new("Frame")
+_cef.Visible = false
+_cef.BorderSizePixel = 0
+_cef.AnchorPoint = Vector2.new(0.5, 0.5)
+_cef.Position = UDim2.new(0.5, 0, 0.5, 0)
+_cef.Size = UDim2.new(0.3, 0, 0.45, 0)
+_cef.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+_cef.BackgroundTransparency = 0.1
+_cef.ZIndex = 10
+_crn:Clone().Parent = _cef
+_cef.Parent = _bck
+local _cfs = Instance.new("UIStroke")
+_cfs.Color = Color3.fromRGB(80, 80, 80)
+_cfs.Thickness = 1
+_cfs.Transparency = 0.5
+_cfs.Parent = _cef
+local _cet = Instance.new("TextLabel")
+_cet.Text = "Add Emote"
+_cet.TextScaled = true
+_cet.BackgroundTransparency = 1
+_cet.TextColor3 = Color3.new(1, 1, 1)
+_cet.Size = UDim2.new(1, 0, 0.12, 0)
+_cet.Position = UDim2.new(0, 0, 0.02, 0)
+_cet.ZIndex = 11
+_cet.Font = Enum.Font.GothamBold
+_cet.Parent = _cef
+local _cenb = Instance.new("TextBox")
+_cenb.PlaceholderText = "Emote Name"
+_cenb.Text = ""
+_cenb.TextScaled = true
+_cenb.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+_cenb.TextColor3 = Color3.new(1, 1, 1)
+_cenb.Size = UDim2.new(0.8, 0, 0.12, 0)
+_cenb.Position = UDim2.new(0.1, 0, 0.18, 0)
+_cenb.BorderSizePixel = 0
+_cenb.ZIndex = 11
+_crn:Clone().Parent = _cenb
+_cenb.Parent = _cef
+local _ceib = Instance.new("TextBox")
+_ceib.PlaceholderText = "Emote ID"
+_ceib.Text = ""
+_ceib.TextScaled = true
+_ceib.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+_ceib.TextColor3 = Color3.new(1, 1, 1)
+_ceib.Size = UDim2.new(0.8, 0, 0.12, 0)
+_ceib.Position = UDim2.new(0.1, 0, 0.34, 0)
+_ceib.BorderSizePixel = 0
+_ceib.ZIndex = 11
+_crn:Clone().Parent = _ceib
+_ceib.Parent = _cef
+local _ceob = Instance.new("TextBox")
+_ceob.PlaceholderText = "Order Number (Optional)"
+_ceob.Text = ""
+_ceob.TextScaled = true
+_ceob.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+_ceob.TextColor3 = Color3.new(1, 1, 1)
+_ceob.Size = UDim2.new(0.8, 0, 0.12, 0)
+_ceob.Position = UDim2.new(0.1, 0, 0.50, 0)
+_ceob.BorderSizePixel = 0
+_ceob.ZIndex = 11
+_crn:Clone().Parent = _ceob
+_ceob.Parent = _cef
+local _aceb = Instance.new("TextButton")
+_aceb.Text = "Add"
+_aceb.TextScaled = true
+_aceb.BackgroundColor3 = Color3.fromRGB(200, 200, 200)
+_aceb.TextColor3 = Color3.new(1, 1, 1)
+_aceb.Size = UDim2.new(0.35, 0, 0.12, 0)
+_aceb.Position = UDim2.new(0.1, 0, 0.68, 0)
+_aceb.BorderSizePixel = 0
+_aceb.ZIndex = 11
+_aceb.Font = Enum.Font.GothamBold
+_crn:Clone().Parent = _aceb
+_aceb.Parent = _cef
+local _cceb = Instance.new("TextButton")
+_cceb.Text = "Close"
+_cceb.TextScaled = true
+_cceb.BackgroundColor3 = Color3.fromRGB(200, 200, 200)
+_cceb.TextColor3 = Color3.new(1, 1, 1)
+_cceb.Size = UDim2.new(0.35, 0, 0.12, 0)
+_cceb.Position = UDim2.new(0.55, 0, 0.68, 0)
+_cceb.BorderSizePixel = 0
+_cceb.ZIndex = 11
+_cceb.Font = Enum.Font.GothamBold
+_crn:Clone().Parent = _cceb
+_cceb.Parent = _cef
+_cceb.MouseButton1Click:Connect(function() _cef.Visible = false end)
+local _sfr = Instance.new("Frame")
+_sfr.Visible = false
+_sfr.BorderSizePixel = 0
+_sfr.Position = UDim2.new(1, 5, -0.125, 0)
+_sfr.Size = UDim2.new(0.7, 0, 0, 0)
+_sfr.AutomaticSize = Enum.AutomaticSize.Y
+_sfr.BackgroundTransparency = 0.9
+_crn:Clone().Parent = _sfr
+_sfr.Parent = _bck
+local _slt = Instance.new("UIListLayout")
+_slt.Padding = UDim.new(0.07, 1)
+_slt.HorizontalAlignment = Enum.HorizontalAlignment.Center
+_slt.VerticalAlignment = Enum.VerticalAlignment.Top
+_slt.SortOrder = Enum.SortOrder.LayoutOrder
+_slt.Parent = _sfr
+local function _isff(...)
+    if _0xF1 then return false end
+    if isfile then return isfile(...) end
+    return false
 end
-
-local function toggleAnimGuiEmote(id, name, btn)
-	local char = Players.LocalPlayer.Character
-	local hum = char and char:FindFirstChildOfClass("Humanoid")
-	if not hum then
-		return
-	end
-
-	if activeAnimId == id then
-		if activeAnimTrack then
-			activeAnimTrack:Stop()
-			activeAnimTrack:Destroy()
-			activeAnimTrack = nil
-		end
-		activeAnimId = nil
-		if IsRecording then
-			table.insert(CurrentRecordingTrack, {
-				id = "STOP",
-				name = "Stop",
-				time = tick() - RecordingStartTime,
-				source = "AnimTab"
-			})
-		end
-		if activeAnimBtn then
-			TweenService:Create(activeAnimBtn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(20, 20, 20)}):Play()
-			if activeAnimBtn:FindFirstChild("TextLabel") then
-				TweenService:Create(activeAnimBtn.TextLabel, TweenInfo.new(0.2), {TextColor3 = Color3.fromRGB(200, 200, 200)}):Play()
-			end
-			activeAnimBtn = nil
-		end
-		return
-	end
-
-	if activeAnimTrack then
-		if IsRecording then
-			table.insert(CurrentRecordingTrack, {
-				id = "STOP",
-				name = "Stop",
-				time = tick() - RecordingStartTime,
-				source = "AnimTab"
-			})
-		end
-		activeAnimTrack:Stop()
-		activeAnimTrack:Destroy()
-		activeAnimTrack = nil
-	end
-
-	if activeAnimBtn then
-		TweenService:Create(activeAnimBtn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(20, 20, 20)}):Play()
-		if activeAnimBtn:FindFirstChild("TextLabel") then
-			TweenService:Create(activeAnimBtn.TextLabel, TweenInfo.new(0.2), {TextColor3 = Color3.fromRGB(200, 200, 200)}):Play()
-		end
-	end
-
-	if IsRecording then
-		table.insert(CurrentRecordingTrack, {
-			id = id,
-			name = name,
-			time = tick() - RecordingStartTime,
-			source = "AnimTab"
-		})
-	end
-
-	local anim = Instance.new("Animation")
-	anim.AnimationId = id
-	local track = hum:LoadAnimation(anim)
-	if track then
-		track:Play()
-		activeAnimTrack = track
-		activeAnimId = id
-		activeAnimBtn = btn
-		TweenService:Create(btn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(255, 255, 255)}):Play()
-		if btn:FindFirstChild("TextLabel") then
-			TweenService:Create(btn.TextLabel, TweenInfo.new(0.2), {TextColor3 = Color3.fromRGB(0, 0, 0)}):Play()
-		end
-		task.spawn(function()
-			track.Stopped:Wait()
-			if activeAnimId == id then
-				activeAnimId = nil
-				activeAnimTrack = nil
-				TweenService:Create(btn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(20, 20, 20)}):Play()
-				if btn:FindFirstChild("TextLabel") then
-					TweenService:Create(btn.TextLabel, TweenInfo.new(0.2), {TextColor3 = Color3.fromRGB(200, 200, 200)}):Play()
-				end
-				activeAnimBtn = nil
-			end
-		end)
-	end
+local function _wff(...)
+    if _0xF1 then return end
+    if writefile then return writefile(...) end
 end
-
-loadAnimOrder()
-for idx, data in ipairs(animGuiAnimations) do
-	local btn = Instance.new("TextButton")
-	btn.Name = data.n
-	btn.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-	btn.BorderSizePixel = 0
-	btn.Text = ""
-	btn.AutoButtonColor = false
-	btn.LayoutOrder = data.order
-	btn.Parent = animContainer
-	local btnStroke = Instance.new("UIStroke")
-	btnStroke.Color = Color3.fromRGB(35, 35, 35)
-	btnStroke.Thickness = 1
-	btnStroke.Parent = btn
-	local btnLabel = Instance.new("TextLabel")
-	btnLabel.Size = UDim2.new(1, -8, 1, 0)
-	btnLabel.Position = UDim2.new(0, 4, 0, 0)
-	btnLabel.BackgroundTransparency = 1
-	btnLabel.Text = data.n
-	btnLabel.Font = Enum.Font.Gotham
-	btnLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
-	btnLabel.TextSize = 13
-	btnLabel.TextXAlignment = Enum.TextXAlignment.Center
-	btnLabel.Parent = btn
-	btn.MouseEnter:Connect(function() if activeAnimBtn ~= btn then TweenService:Create(btn, TweenInfo.new(0.08), {BackgroundColor3 = Color3.fromRGB(30, 30, 30)}):Play() end end)
-	btn.MouseLeave:Connect(function() if activeAnimBtn ~= btn then TweenService:Create(btn, TweenInfo.new(0.08), {BackgroundColor3 = Color3.fromRGB(20, 20, 20)}):Play() end end)
-	btn.MouseButton1Click:Connect(function() toggleAnimGuiEmote(data.i, data.n, btn) end)
+local function _rff(...)
+    if _0xF1 then return "" end
+    if readfile then return readfile(...) end
+    return ""
 end
-updateAnimButtonLabels()
-
-animToggleBtn.MouseButton1Click:Connect(function()
-	isHorizontalAnim = not isHorizontalAnim
-	if isHorizontalAnim then
-		TweenService:Create(animMain, TweenInfo.new(0.25, Enum.EasingStyle.Quad), {Size = UDim2.new(0, 450, 0, 110)}):Play()
-		animLayout.CellSize = UDim2.new(0, 94, 0, 30)
-		animLayout.CellPadding = UDim2.new(0, 4, 0, 6)
-	else
-		TweenService:Create(animMain, TweenInfo.new(0.25, Enum.EasingStyle.Quad), {Size = UDim2.new(0, 260, 0, 214)}):Play()
-		animLayout.CellSize = UDim2.new(0.48, 0, 0, 30)
-		animLayout.CellPadding = UDim2.new(0, 6, 0, 6)
-	end
+local function _snd(_t, _tx)
+    if (not _0xF1) and syn and syn.toast_notification then
+        syn.toast_notification({Type = "Error", Title = _t, Content = _tx})
+    else
+        _0xE6:SetCore("SendNotification", {Title = _t, Text = _tx})
+    end
+end
+local function _ste()
+    for _i, _em in pairs(_emt) do
+        local _eb = _frm:FindFirstChild(tostring(_em.id))
+        if not _eb then continue end
+        local _if = table.find(_fve, _em.id)
+        if _em.customOrder then
+            _eb.LayoutOrder = _em.customOrder
+        else
+            local _sv = (_em.sort and _em.sort[_cst]) or _em.index or 0
+            _eb.LayoutOrder = _sv + ((_if and 0) or #_emt)
+        end
+        local _nl = _eb:FindFirstChild("number")
+        if _nl then _nl.Text = tostring((_em.sort and _em.sort[_cst]) or _em.index or "") end
+    end
+end
+local function _ugr()
+    local _cw = (0.95 - (_rwc - 1) * 0.005) / _rwc
+    _grd.CellSize = UDim2.new(_cw, 0, _cw, 0)
+    _grd.CellPadding = UDim2.new(0.005, 0, 0.002, 0)
+end
+local function _crs(_od, _tx, _sr)
+    local _cs = Instance.new("TextButton")
+    _cs.SizeConstraint = Enum.SizeConstraint.RelativeXX
+    _cs.Size = UDim2.new(1, 0, 0.2, 0)
+    _cs.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    _cs.LayoutOrder = _od
+    _cs.TextColor3 = Color3.new(1, 1, 1)
+    _cs.Text = _tx
+    _cs.TextScaled = true
+    _cs.BorderSizePixel = 0
+    _cs.Font = Enum.Font.GothamBold
+    Instance.new("UICorner").Parent = _cs
+    _cs.Parent = _sfr
+    _cs.MouseButton1Click:Connect(function()
+        _sfr.Visible = false
+        _cst = _sr
+        _ste()
+    end)
+    return _cs
+end
+_crs(1, "Newest First", "newestfirst")
+_crs(2, "Oldest First", "oldestfirst")
+_crs(3, "Alphabetically First", "alphabeticfirst")
+_crs(4, "Alphabetically Last", "alphabeticlast")
+_crs(5, "Highest Price", "highestprice")
+_crs(6, "Lowest Price", "lowestprice")
+local _sbn = Instance.new("TextButton")
+_sbn.BorderSizePixel = 0
+_sbn.AnchorPoint = Vector2.new(0.5, 0.5)
+_sbn.Position = UDim2.new(1, -10, -5, 0)
+_sbn.Size = UDim2.new(0.08, 0, 0.04, 0)
+_sbn.TextScaled = true
+_sbn.TextColor3 = Color3.new(1, 1, 1)
+_sbn.BackgroundColor3 = Color3.new(0, 0, 0)
+_sbn.BackgroundTransparency = 1
+_sbn.Text = "Sort"
+_sbn.Font = Enum.Font.GothamBold
+_sbn.MouseButton1Click:Connect(function() _sfr.Visible = not _sfr.Visible end)
+Instance.new("UICorner").Parent = _sbn
+_sbn.Parent = _bck
+local _rsf = Instance.new("Frame")
+_rsf.Name = "RowSliderFrame"
+_rsf.BorderSizePixel = 0
+_rsf.AnchorPoint = Vector2.new(0.5, 0.5)
+_rsf.Position = UDim2.new(0.95, 0, 0.45, 0)
+_rsf.Size = UDim2.new(0.1, 0, 0.035, 0)
+_rsf.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+_rsf.BackgroundTransparency = 0.3
+Instance.new("UICorner").Parent = _rsf
+_rsf.Parent = _bck
+local _rss = Instance.new("UIStroke")
+_rss.Color = Color3.fromRGB(80, 80, 80)
+_rss.Thickness = 1
+_rss.Transparency = 0.5
+_rss.Parent = _rsf
+local _rsl = Instance.new("TextLabel")
+_rsl.Name = "RowLabel"
+_rsl.AnchorPoint = Vector2.new(0.5, 0)
+_rsl.Position = UDim2.new(0.5, 0, -0.9, 0)
+_rsl.Size = UDim2.new(1, 0, 0.8, 0)
+_rsl.BackgroundTransparency = 1
+_rsl.Text = "Grid Rows"
+_rsl.TextColor3 = Color3.new(1, 1, 1)
+_rsl.TextScaled = true
+_rsl.Font = Enum.Font.GothamBold
+_rsl.Parent = _rsf
+local _rmb = Instance.new("TextButton")
+_rmb.Name = "MinusBtn"
+_rmb.BorderSizePixel = 0
+_rmb.AnchorPoint = Vector2.new(0, 0.5)
+_rmb.Position = UDim2.new(0.05, 0, 0.5, 0)
+_rmb.Size = UDim2.new(0.25, 0, 0.7, 0)
+_rmb.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+_rmb.BackgroundTransparency = 0.3
+_rmb.Text = "-"
+_rmb.TextColor3 = Color3.new(1, 1, 1)
+_rmb.TextScaled = true
+_rmb.Font = Enum.Font.GothamBold
+Instance.new("UICorner").Parent = _rmb
+_rmb.Parent = _rsf
+local _rcl = Instance.new("TextLabel")
+_rcl.Name = "CountLabel"
+_rcl.AnchorPoint = Vector2.new(0.5, 0.5)
+_rcl.Position = UDim2.new(0.5, 0, 0.5, 0)
+_rcl.Size = UDim2.new(0.35, 0, 0.7, 0)
+_rcl.BackgroundTransparency = 1
+_rcl.Text = tostring(_rwc)
+_rcl.TextColor3 = Color3.new(1, 1, 1)
+_rcl.TextScaled = true
+_rcl.Font = Enum.Font.GothamBold
+_rcl.Parent = _rsf
+local _rpb = Instance.new("TextButton")
+_rpb.Name = "PlusBtn"
+_rpb.BorderSizePixel = 0
+_rpb.AnchorPoint = Vector2.new(1, 0.5)
+_rpb.Position = UDim2.new(0.95, 0, 0.5, 0)
+_rpb.Size = UDim2.new(0.25, 0, 0.7, 0)
+_rpb.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+_rpb.BackgroundTransparency = 0.3
+_rpb.Text = "+"
+_rpb.TextColor3 = Color3.new(1, 1, 1)
+_rpb.TextScaled = true
+_rpb.Font = Enum.Font.GothamBold
+Instance.new("UICorner").Parent = _rpb
+_rpb.Parent = _rsf
+_rmb.MouseButton1Click:Connect(function()
+    if _rwc > 3 then
+        _rwc = _rwc - 1
+        _rcl.Text = tostring(_rwc)
+        _ugr()
+        _wff("RowCount.txt", _0xI0:JSONEncode({count = _rwc}))
+        _snd("Grid Rows", "Set to " .. _rwc .. " columns per row")
+    end
 end)
-
-animNumberBtn.MouseButton1Click:Connect(function()
-	reorderUI.Visible = true
-	for _, item in ipairs(reorderScroll:GetChildren()) do if item:IsA("Frame") then item:Destroy() end end
-	local sorted = getSortedAnimGuiAnimations()
-	for _, data in ipairs(sorted) do createReorderItem(data) end
+_rpb.MouseButton1Click:Connect(function()
+    if _rwc < 11 then
+        _rwc = _rwc + 1
+        _rcl.Text = tostring(_rwc)
+        _ugr()
+        _wff("RowCount.txt", _0xI0:JSONEncode({count = _rwc}))
+        _snd("Grid Rows", "Set to " .. _rwc .. " columns per row")
+    end
 end)
-
-reorderCloseBtn.MouseButton1Click:Connect(function() reorderUI.Visible = false end)
-
-OnCharacterAdded = function(Character)
-	for i, v in pairs(Frame:GetChildren()) do
-		if not v:IsA("UIGridLayout") then
-			v:Destroy()
-		end
-	end
-
-	local Humanoid = WaitForChildOfClass(Character, "Humanoid")
-	local Description = Humanoid:WaitForChild("HumanoidDescription", 5) or Instance.new("HumanoidDescription", Humanoid)
-	local Ratio = Instance.new("UIAspectRatioConstraint")
-	Ratio.AspectType = Enum.AspectType.ScaleWithParentSize
-
-	local hideFavBtn = Instance.new("TextButton")
-	hideFavBtn.Name = "HideFavoritesBtn"
-	Ratio:Clone().Parent = hideFavBtn
-	hideFavBtn.LayoutOrder = 0
-	hideFavBtn.TextColor3 = Color3.new(1, 1, 1)
-	hideFavBtn.BorderSizePixel = 0
-	hideFavBtn.BackgroundTransparency = 0.3
-	hideFavBtn.BackgroundColor3 = Color3.new(0, 0, 0)
-	hideFavBtn.TextScaled = true
-	hideFavBtn.Text = FavoritesVisible and "Hide Favorites" or "Show Favorites"
-	hideFavBtn.Font = Enum.Font.GothamBold
-	hideFavBtn:SetAttribute("name", "")
-
-	local Corner = Instance.new("UICorner")
-	Corner.Parent = hideFavBtn
-
-	local HideFavStroke = Instance.new("UIStroke")
-	HideFavStroke.Color = Color3.fromRGB(80, 80, 80)
-	HideFavStroke.Thickness = 1
-	HideFavStroke.Transparency = 0.5
-	HideFavStroke.Parent = hideFavBtn
-
-	hideFavBtn.MouseButton1Click:Connect(ToggleFavoriteButtons)
-	hideFavBtn.MouseEnter:Connect(function()
-		EmoteName.Text = "Toggle Favorites"
-	end)
-	hideFavBtn.Parent = Frame
-
-	local function CreateEmoteButtonLocal(Emote, Description, Ratio)
-		Description:AddEmote(Emote.name, Emote.id)
-		local EmoteButton = Instance.new("ImageButton")
-		local IsFavorited = table.find(FavoritedEmotes, Emote.id)
-
-		if CustomEmoteOrder[tostring(Emote.id)] then
-			EmoteButton.LayoutOrder = CustomEmoteOrder[tostring(Emote.id)]
-		else
-			local sortValue = (Emote.sort and Emote.sort[CurrentSort]) or Emote.index or 0
-			EmoteButton.LayoutOrder = sortValue + ((IsFavorited and 0) or #Emotes)
-		end
-
-		EmoteButton.Name = tostring(Emote.id)
-		EmoteButton:SetAttribute("name", Emote.name)
-		local ButtonCorner = Instance.new("UICorner")
-		ButtonCorner.Parent = EmoteButton
-		EmoteButton.Image = Emote.icon
-		EmoteButton.BackgroundTransparency = 0.5
-		EmoteButton.BackgroundColor3 = Color3.new(0, 0, 0)
-		EmoteButton.BorderSizePixel = 0
-		Ratio:Clone().Parent = EmoteButton
-
-		local ButtonStroke = Instance.new("UIStroke")
-		ButtonStroke.Color = Color3.fromRGB(80, 80, 80)
-		ButtonStroke.Thickness = 1
-		ButtonStroke.Transparency = 0.5
-		ButtonStroke.Parent = EmoteButton
-
-		local EmoteNumber = Instance.new("TextLabel")
-		EmoteNumber.Name = "number"
-		EmoteNumber.TextScaled = true
-		EmoteNumber.BackgroundTransparency = 1
-		EmoteNumber.TextColor3 = Color3.new(1, 1, 1)
-		EmoteNumber.BorderSizePixel = 0
-		EmoteNumber.AnchorPoint = Vector2.new(0.5, 0.5)
-		EmoteNumber.Size = UDim2.new(0.2, 0, 0.2, 0)
-		EmoteNumber.Position = UDim2.new(0.1, 0, 0.9, 0)
-		EmoteNumber.Text = tostring((Emote.sort and Emote.sort[CurrentSort]) or Emote.index or "")
-		EmoteNumber.TextXAlignment = Enum.TextXAlignment.Center
-		EmoteNumber.TextYAlignment = Enum.TextYAlignment.Center
-		EmoteNumber.Font = Enum.Font.GothamBold
-
-		local NumberStroke = Instance.new("UIStroke")
-		NumberStroke.Transparency = 0.5
-		NumberStroke.Parent = EmoteNumber
-		EmoteNumber.Parent = EmoteButton
-
-		EmoteButton.Parent = Frame
-
-		EmoteButton.MouseButton1Click:Connect(function()
-			if not DraggingEmote then
-				PlayEmote(Emote.name, Emote.id)
-			else
-				local dragOrder = DraggingEmote.button.LayoutOrder
-				local targetOrder = EmoteButton.LayoutOrder
-				DraggingEmote.button.LayoutOrder = targetOrder
-				EmoteButton.LayoutOrder = dragOrder
-				CustomEmoteOrder[tostring(DraggingEmote.id)] = targetOrder
-				CustomEmoteOrder[tostring(Emote.id)] = dragOrder
-				WriteFileFunc("CustomEmoteOrder.txt", HttpService:JSONEncode(CustomEmoteOrder))
-				DraggingEmote.button.BackgroundColor3 = Color3.new(0, 0, 0)
-				DraggingEmote.button.BackgroundTransparency = 0.5
-				DraggingEmote = nil
-			end
-		end)
-
-		EmoteButton.MouseButton2Down:Connect(function()
-			DraggingEmote = {button = EmoteButton, id = Emote.id, originalOrder = EmoteButton.LayoutOrder}
-			EmoteButton.BackgroundColor3 = Color3.fromRGB(100, 100, 255)
-			EmoteButton.BackgroundTransparency = 0.2
-		end)
-
-		EmoteButton.MouseEnter:Connect(function()
-			EmoteName.Text = Emote.name
-		end)
-
-		local Favorite = Instance.new("ImageButton")
-		Favorite.Name = "favorite"
-		Favorite.Image = table.find(FavoritedEmotes, Emote.id) and FavoriteOn or FavoriteOff
-		Favorite.AnchorPoint = Vector2.new(0.5, 0.5)
-		Favorite.Size = UDim2.new(0.1, 0, 0.1, 0)
-		Favorite.Position = UDim2.new(0.9, 0, 0.9, 0)
-		Favorite.BorderSizePixel = 0
-		Favorite.BackgroundTransparency = 1
-		Favorite.Visible = FavoritesVisible
-		Favorite.Parent = EmoteButton
-
-		Favorite.MouseButton1Click:Connect(function()
-			local index = table.find(FavoritedEmotes, Emote.id)
-			if index then
-				table.remove(FavoritedEmotes, index)
-				Favorite.Image = FavoriteOff
-				EmoteButton.LayoutOrder = Emote.sort[CurrentSort] + #Emotes
-			else
-				table.insert(FavoritedEmotes, Emote.id)
-				Favorite.Image = FavoriteOn
-				EmoteButton.LayoutOrder = Emote.sort[CurrentSort]
-			end
-			WriteFileFunc("FavoritedEmotes.txt", HttpService:JSONEncode(FavoritedEmotes))
-		end)
-	end
-
-	for i, Emote in pairs(Emotes) do
-		CreateEmoteButtonLocal(Emote, Description, Ratio)
-	end
-
-	for i = 1, 9 do
-		local f = Instance.new("Frame")
-		f.LayoutOrder = 2147483647
-		f.Name = "filler"
-		f.BackgroundTransparency = 1
-		Ratio:Clone().Parent = f
-		f.Parent = Frame
-	end
-
-	activeAnimId = nil
-	activeAnimTrack = nil
-	if activeAnimBtn then
-		activeAnimBtn.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-		if activeAnimBtn:FindFirstChild("TextLabel") then
-			activeAnimBtn.TextLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
-		end
-		activeAnimBtn = nil
-	end
+local _asb = Instance.new("TextButton")
+_asb.BorderSizePixel = 0
+_asb.AnchorPoint = Vector2.new(0.5, 0.5)
+_asb.Position = UDim2.new(0.95, 0, 0.5, 0)
+_asb.Size = UDim2.new(0.1, 0, 0.04, 0)
+_asb.TextScaled = true
+_asb.TextColor3 = Color3.new(1, 1, 1)
+_asb.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+_asb.BackgroundTransparency = 0.3
+_asb.Text = "Avatar Switch"
+_asb.Font = Enum.Font.GothamBold
+Instance.new("UICorner").Parent = _asb
+_asb.Parent = _bck
+local _ass = Instance.new("UIStroke")
+_ass.Color = Color3.fromRGB(80, 80, 80)
+_ass.Thickness = 1
+_ass.Transparency = 0.5
+_ass.Parent = _asb
+local _kbb = Instance.new("TextButton")
+_kbb.BorderSizePixel = 0
+_kbb.AnchorPoint = Vector2.new(0.5, 0.5)
+_kbb.Position = UDim2.new(0.95, 0, 0.535, 0)
+_kbb.Size = UDim2.new(0.04, 0, 0.025, 0)
+_kbb.TextScaled = true
+_kbb.TextColor3 = Color3.new(1, 1, 1)
+_kbb.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+_kbb.BackgroundTransparency = 0.3
+_kbb.Text = "G"
+_kbb.Font = Enum.Font.GothamBold
+Instance.new("UICorner").Parent = _kbb
+_kbb.Parent = _bck
+local _kbs = Instance.new("UIStroke")
+_kbs.Color = Color3.fromRGB(80, 80, 80)
+_kbs.Thickness = 1
+_kbs.Transparency = 0.5
+_kbs.Parent = _kbb
+local _acb = Instance.new("TextButton")
+_acb.BorderSizePixel = 0
+_acb.AnchorPoint = Vector2.new(0.5, 0.5)
+_acb.Position = UDim2.new(0.95, 0, 0.58, 0)
+_acb.Size = UDim2.new(0.1, 0, 0.03, 0)
+_acb.TextScaled = true
+_acb.TextColor3 = Color3.new(1, 1, 1)
+_acb.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+_acb.BackgroundTransparency = 0.3
+_acb.Text = "Auto Close: OFF"
+_acb.Font = Enum.Font.GothamBold
+Instance.new("UICorner").Parent = _acb
+_acb.Parent = _bck
+local _acs = Instance.new("UIStroke")
+_acs.Color = Color3.fromRGB(80, 80, 80)
+_acs.Thickness = 1
+_acs.Transparency = 0.5
+_acs.Parent = _acb
+_acb.MouseButton1Click:Connect(function()
+    _cae = not _cae
+    _acb.Text = _cae and "Auto Close: ON" or "Auto Close: OFF"
+    _wff("AutoCloseEmote.txt", _0xI0:JSONEncode({enabled = _cae}))
+    _snd("Auto Close", _cae and "UI will close after each emote" or "UI will stay open after emotes")
+end)
+local _rbn = Instance.new("TextButton")
+_rbn.BorderSizePixel = 0
+_rbn.AnchorPoint = Vector2.new(0.5, 0.5)
+_rbn.Position = UDim2.new(0.95, 0, 0.625, 0)
+_rbn.Size = UDim2.new(0.1, 0, 0.04, 0)
+_rbn.TextScaled = true
+_rbn.TextColor3 = Color3.new(1, 1, 1)
+_rbn.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+_rbn.BackgroundTransparency = 0.3
+_rbn.Text = "Record"
+_rbn.Font = Enum.Font.GothamBold
+Instance.new("UICorner").Parent = _rbn
+_rbn.Parent = _bck
+local _rbs = Instance.new("UIStroke")
+_rbs.Color = Color3.fromRGB(80, 80, 80)
+_rbs.Thickness = 1
+_rbs.Transparency = 0.5
+_rbs.Parent = _rbn
+local _stp = Instance.new("TextButton")
+_stp.BorderSizePixel = 0
+_stp.AnchorPoint = Vector2.new(0.5, 0.5)
+_stp.Position = UDim2.new(0.95, 0, 0.625, 0)
+_stp.Size = UDim2.new(0.1, 0, 0.04, 0)
+_stp.TextScaled = true
+_stp.TextColor3 = Color3.new(1, 1, 1)
+_stp.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
+_stp.BackgroundTransparency = 0.3
+_stp.Text = "Stop"
+_stp.Font = Enum.Font.GothamBold
+_stp.Visible = false
+Instance.new("UICorner").Parent = _stp
+_stp.Parent = _bck
+local _sts = Instance.new("UIStroke")
+_sts.Color = Color3.fromRGB(80, 80, 80)
+_sts.Thickness = 1
+_sts.Transparency = 0.5
+_sts.Parent = _stp
+local _rls = Instance.new("ScrollingFrame")
+_rls.Name = "RecordingList"
+_rls.Size = UDim2.new(0.12, 0, 0.3, 0)
+_rls.CanvasSize = UDim2.new(0, 0, 0, 0)
+_rls.AutomaticCanvasSize = Enum.AutomaticSize.Y
+_rls.ScrollingDirection = Enum.ScrollingDirection.Y
+_rls.AnchorPoint = Vector2.new(0.5, 0)
+_rls.Position = UDim2.new(0.95, 0, 0.66, 0)
+_rls.BackgroundTransparency = 1
+_rls.ScrollBarThickness = 2
+_rls.BorderSizePixel = 0
+_rls.Parent = _bck
+local _rll = Instance.new("UIListLayout")
+_rll.Padding = UDim.new(0, 5)
+_rll.HorizontalAlignment = Enum.HorizontalAlignment.Center
+_rll.VerticalAlignment = Enum.VerticalAlignment.Top
+_rll.SortOrder = Enum.SortOrder.LayoutOrder
+_rll.Parent = _rls
+local function _rfl()
+    for _, _ch in pairs(_rls:GetChildren()) do
+        if _ch:IsA("Frame") then _ch:Destroy() end
+    end
+    for _i, _rc in pairs(_svr) do
+        local _if = Instance.new("Frame")
+        _if.Size = UDim2.new(0.95, 0, 0, 30)
+        _if.BackgroundTransparency = 0.5
+        _if.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+        _if.BorderSizePixel = 0
+        Instance.new("UICorner").Parent = _if
+        local _pb = Instance.new("TextButton")
+        _pb.Size = UDim2.new(0.8, 0, 1, 0)
+        _pb.Position = UDim2.new(0, 0, 0, 0)
+        _pb.BackgroundTransparency = 1
+        _pb.Text = "  " .. _rc.name
+        _pb.TextColor3 = Color3.new(1, 1, 1)
+        _pb.TextScaled = true
+        _pb.Font = Enum.Font.Gotham
+        _pb.TextXAlignment = Enum.TextXAlignment.Left
+        _pb.Parent = _if
+        local _nb = Instance.new("TextBox")
+        _nb.Size = UDim2.new(0.8, 0, 1, 0)
+        _nb.Position = UDim2.new(0, 0, 0, 0)
+        _nb.BackgroundTransparency = 1
+        _nb.Text = _rc.name
+        _nb.TextColor3 = Color3.new(1, 1, 1)
+        _nb.TextScaled = true
+        _nb.Font = Enum.Font.Gotham
+        _nb.TextXAlignment = Enum.TextXAlignment.Left
+        _nb.Visible = false
+        _nb.Parent = _if
+        local _db = Instance.new("TextButton")
+        _db.Size = UDim2.new(0.15, 0, 0.8, 0)
+        _db.AnchorPoint = Vector2.new(1, 0.5)
+        _db.Position = UDim2.new(0.98, 0, 0.5, 0)
+        _db.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+        _db.BackgroundTransparency = 0.3
+        _db.Text = "X"
+        _db.TextColor3 = Color3.new(1, 1, 1)
+        _db.TextScaled = true
+        _db.Font = Enum.Font.GothamBold
+        Instance.new("UICorner").Parent = _db
+        _db.Parent = _if
+        _if.Parent = _rls
+        _db.MouseButton1Click:Connect(function()
+            table.remove(_svr, _i)
+            _wff("EmoteRecordings.txt", _0xI0:JSONEncode(_svr))
+            _rfl()
+        end)
+        _pb.MouseButton2Up:Connect(function()
+            _pb.Visible = false
+            _nb.Visible = true
+            _nb:CaptureFocus()
+        end)
+        _nb.FocusLost:Connect(function()
+            _pb.Visible = true
+            _nb.Visible = false
+            if _nb.Text ~= "" then
+                _svr[_i].name = _nb.Text
+                _pb.Text = "  " .. _nb.Text
+                _wff("EmoteRecordings.txt", _0xI0:JSONEncode(_svr))
+            end
+        end)
+        _pb.MouseButton1Click:Connect(function()
+            task.spawn(function()
+                if _isr then return end
+                _snd("Playback", "Playing " .. _rc.name .. "...")
+                local _st = tick()
+                for _, _ev in ipairs(_rc.data) do
+                    local _tt = _ev.time
+                    local _ce = tick() - _st
+                    local _wd = _tt - _ce
+                    if _wd > 0 then task.wait(_wd) end
+                    local _ch = _0xJ1.LocalPlayer.Character
+                    local _hm = _ch and _ch:FindFirstChildOfClass("Humanoid")
+                    if not _hm then continue end
+                    if _ev.id == "STOP" then
+                        if _aat then _aat:Stop() _aat:Destroy() _aat = nil end
+                        _aai = nil
+                        if _aab then
+                            _0xH9:Create(_aab, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(20, 20, 20)}):Play()
+                            if _aab:FindFirstChild("TextLabel") then
+                                _0xH9:Create(_aab.TextLabel, TweenInfo.new(0.2), {TextColor3 = Color3.fromRGB(200, 200, 200)}):Play()
+                            end
+                            _aab = nil
+                        end
+                        if _cpt then pcall(function() _cpt:Stop() end) _cpt = nil end
+                        continue
+                    end
+                    if _ev.source == "AnimTab" then
+                        if _aat then _aat:Stop() _aat:Destroy() _aat = nil end
+                        local _an = Instance.new("Animation")
+                        _an.AnimationId = _ev.id
+                        local _tr = _hm:LoadAnimation(_an)
+                        if _tr then _tr:Play() _aat = _tr _aai = _ev.id end
+                    else
+                        if _cpt then pcall(function() _cpt:Stop() end) _cpt = nil end
+                        local _tr = _ple(_ev.name, _ev.id)
+                        if _tr and typeof(_tr) == "Instance" and _tr:IsA("AnimationTrack") then _cpt = _tr end
+                    end
+                end
+                _cpt = nil
+                _aat = nil
+                _aai = nil
+                if _aab then
+                    _0xH9:Create(_aab, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(20, 20, 20)}):Play()
+                    if _aab:FindFirstChild("TextLabel") then
+                        _0xH9:Create(_aab.TextLabel, TweenInfo.new(0.2), {TextColor3 = Color3.fromRGB(200, 200, 200)}):Play()
+                    end
+                    _aab = nil
+                end
+            end)
+        end)
+    end
 end
-
-if LocalPlayer.Character then
-	OnCharacterAdded(LocalPlayer.Character)
+_rbn.MouseButton1Click:Connect(function()
+    _isr = true
+    _rst = tick()
+    _crt = {}
+    _rbn.Visible = false
+    _stp.Visible = true
+    _rbn.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
+    _snd("Recording", "Recording started! Play emotes now...")
+end)
+_stp.MouseButton1Click:Connect(function()
+    _isr = false
+    _stp.Visible = false
+    _rbn.Visible = true
+    _rbn.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    if #_crt > 0 then
+        local _nm = "Recording " .. (#_svr + 1)
+        table.insert(_svr, {name = _nm, data = _crt})
+        _wff("EmoteRecordings.txt", _0xI0:JSONEncode(_svr))
+        _rfl()
+        _snd("Recording", "Saved as '" .. _nm .. "'")
+    else
+        _snd("Recording", "No emotes recorded")
+    end
+    _crt = {}
+end)
+local _awk = false
+local function _fas()
+    local _re = _0xG8:FindFirstChild("event_modify_refresh")
+    if _re then _re:FireServer(_0xJ1.LocalPlayer) _snd("Avatar Switch", "Avatar refreshed!")
+    else _snd("Error", "Refresh event not found!") end
 end
-
-LocalPlayer.CharacterAdded:Connect(OnCharacterAdded)
-
+_asb.MouseButton1Click:Connect(_fas)
+local function _ope(_nm, _st, _ip)
+    if _st == Enum.UserInputState.Begin then
+        if _cme then _scm() _scr.Enabled = true
+        else _scr.Enabled = not _scr.Enabled end
+    end
+end
+if _0xF1 then _0xA2:BindActionAtPriority("Emote Menu", _ope, true, 2001, Enum.KeyCode.Comma)
+else _0xA2:BindCoreActionAtPriority("Emote Menu", _ope, true, 2001, Enum.KeyCode.Comma) end
+local _ipc
+_scr:GetPropertyChangedSignal("Enabled"):Connect(function()
+    if _scr.Enabled then
+        _enm.Text = "Select an Emote"
+        _srb.Text = ""
+        _sfr.Visible = false
+        _0xB3:SetEmotesMenuOpen(false)
+        _ipc = _0xF7.InputBegan:Connect(function(_ip, _pr)
+            if not _pr and _ip.UserInputType == Enum.UserInputType.MouseButton1 then _scr.Enabled = false end
+        end)
+    elseif _ipc then _ipc:Disconnect() end
+end)
+_kbb.MouseButton1Click:Connect(function()
+    _awk = true
+    _kbb.Text = "..."
+    _kbb.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
+end)
+_srb = Instance.new("TextBox")
+_srb.BorderSizePixel = 0
+_srb.AnchorPoint = Vector2.new(0.5, 0.5)
+_srb.Position = UDim2.new(1, 0, -0.055, 0)
+_srb.Size = UDim2.new(0.1, 0, 0.04, 0)
+_srb.TextScaled = true
+_srb.PlaceholderText = "Search"
+_srb.TextColor3 = Color3.new(1, 1, 1)
+_srb.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+_srb.BackgroundTransparency = 0.3
+_srb.Text = ""
+_srb:GetPropertyChangedSignal("Text"):Connect(function()
+    local _tx = _srb.Text:lower():sub(1, 50)
+    if _srb.Text ~= _tx then _srb.Text = _tx end
+    for _, _bt in pairs(_frm:GetChildren()) do
+        if _bt:IsA("GuiButton") then
+            local _nm = _bt:GetAttribute("name")
+            if _nm then _bt.Visible = _tx == "" or _nm:lower():match(_tx) ~= nil end
+        end
+    end
+end)
+Instance.new("UICorner").Parent = _srb
+_srb.Parent = _bck
+local _srs = Instance.new("UIStroke")
+_srs.Color = Color3.fromRGB(80, 80, 80)
+_srs.Thickness = 1
+_srs.Transparency = 0.5
+_srs.Parent = _srb
+local _aeb = Instance.new("TextButton")
+_aeb.BorderSizePixel = 0
+_aeb.AnchorPoint = Vector2.new(0.5, 0.5)
+_aeb.Position = UDim2.new(1, 0, 0, 0)
+_aeb.Size = UDim2.new(0.1, 0, 0.04, 0)
+_aeb.TextScaled = true
+_aeb.TextColor3 = Color3.new(1, 1, 1)
+_aeb.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+_aeb.BackgroundTransparency = 0.3
+_aeb.Text = "Add Emote"
+_aeb.Font = Enum.Font.GothamBold
+_aeb.MouseButton1Click:Connect(function() _cef.Visible = not _cef.Visible end)
+Instance.new("UICorner").Parent = _aeb
+_aeb.Parent = _bck
+local _aes = Instance.new("UIStroke")
+_aes.Color = Color3.fromRGB(80, 80, 80)
+_aes.Thickness = 1
+_aes.Transparency = 0.5
+_aes.Parent = _aeb
+local _0x7a = {77,97,100,101,32,66,121,32,90,97,49,107,46,32,86,101,114,115,105,111,110,58,32,50,46,56,46,50}
+local _0x7b = ""
+for _,_v in ipairs(_0x7a) do _0x7b = _0x7b .. string.char(_v) end
+local _mbl = Instance.new("TextLabel")
+_mbl.Text = _0x7b
+_mbl.TextScaled = true
+_mbl.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+_mbl.BackgroundTransparency = 0.3
+_mbl.TextColor3 = Color3.new(1, 1, 1)
+_mbl.BorderSizePixel = 0
+_mbl.AnchorPoint = Vector2.new(0.5, 0.5)
+_mbl.Position = UDim2.new(1.02, 0, 1, 0)
+_mbl.Size = UDim2.new(0.25, 0, 0.06, 0)
+_mbl.Font = Enum.Font.GothamBold
+_mbl.Name = string.char(95,95,109,98,108)
+Instance.new("UICorner").Parent = _mbl
+_mbl.Parent = _bck
+_0xK2.Heartbeat:Connect(function()
+    local _f = _bck:FindFirstChild(string.char(95,95,109,98,108))
+    if not _f or not _f:IsA("TextLabel") then
+        local _n = Instance.new("TextLabel")
+        _n.Text = _0x7b
+        _n.TextScaled = true
+        _n.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+        _n.BackgroundTransparency = 0.3
+        _n.TextColor3 = Color3.new(1, 1, 1)
+        _n.BorderSizePixel = 0
+        _n.AnchorPoint = Vector2.new(0.5, 0.5)
+        _n.Position = UDim2.new(1.02, 0, 1, 0)
+        _n.Size = UDim2.new(0.25, 0, 0.06, 0)
+        _n.Font = Enum.Font.GothamBold
+        _n.Name = string.char(95,95,109,98,108)
+        Instance.new("UICorner").Parent = _n
+        _n.Parent = _bck
+    elseif _f.Text ~= _0x7b then
+        _f.Text = _0x7b
+    end
+end)
+if not _0xF1 then
+    _0xB3.EmotesMenuOpenChanged:Connect(function(_io) if _io then _scr.Enabled = false end end)
+end
+_0xB3.MenuOpened:Connect(function() _scr.Enabled = false end)
+if not game:IsLoaded() then game.Loaded:Wait() end
+local _lpl = _0xJ1.LocalPlayer
+if _0xF1 then _scr.Parent = _lpl.PlayerGui
+else
+    local _sv3 = syn and DrawingImmediate
+    if (not is_sirhurt_closure) and (not _sv3) and (syn and syn.protect_gui) then
+        syn.protect_gui(_scr)
+        _scr.Parent = _0xC4
+    elseif get_hidden_gui or gethui then
+        _scr.Parent = (get_hidden_gui or gethui)()
+    else
+        _scr.Parent = _0xC4
+    end
+end
+local function _wfc(_p, _c)
+    local _ch = _p:FindFirstChildOfClass(_c)
+    while not _ch or _ch.ClassName ~= _c do _ch = _p.ChildAdded:Wait() end
+    return _ch
+end
+local _prm = CatalogSearchParams.new()
+_prm.AssetTypes = {Enum.AvatarAssetType.EmoteAnimation}
+_prm.SortType = Enum.CatalogSortType.RecentlyCreated
+_prm.SortAggregation = Enum.CatalogSortAggregation.AllTime
+_prm.IncludeOffSale = true
+_prm.CreatorName = "Roblox"
+_prm.Limit = 120
+local function _gcp()
+    local _sc, _cp = pcall(function() return _0xD5:SearchCatalog(_prm) end)
+    if not _sc then task.wait(5) return _gcp() end
+    return _cp
+end
+local _cpg = _gcp()
+local _pgs = {}
+while true do
+    table.insert(_pgs, _cpg:GetCurrentPage())
+    if _cpg.IsFinished then break end
+    local function _atp()
+        local _sc = pcall(function() _cpg:AdvanceToNextPageAsync() end)
+        if not _sc then task.wait(5) return _atp() end
+    end
+    _atp()
+end
+for _, _pg in pairs(_pgs) do
+    for _, _em in pairs(_pg) do _ade(_em.Name, _em.Id, _em.Price) end
+end
+_ade("Sitting", 139621472081340)
+_ade("Naked", 15571538346)
+_ade("Huego Drive", 17360720445)
+_ade("Hand Stand", 124055618254120)
+_ade("dead", 119400441490983)
+_ade("patty cake2", 76124649545220)
+_ade("patty cake", 120642514156293)
+_ade("Ghostly", 124071723800586)
+_ade("Roll", 130726889233022)
+_ade("Angles", 75837489916720)
+_ade("Oof", 110740075367686)
+_ade("imagination", 18443268949)
+_ade("abcd", 129297813295515)
+_ade("Side Stepper", 14024722653)
+_ade("Around", 16215060261)
+_ade("low", 10214411646)
+_ade("talking", 6303091119)
+_ade("talking", 134615135651900)
+_ade("twicee", 14900153406)
+_ade("archer", 13823339506)
+_ade("egirl", 117809429848082)
+_ade("sab", 80652345815019)
+_ade("Secret-Handshake-Dance", 120642514156293)
+_ade("K-Pop Phone Call Crouch", 81083707390746)
+_ade("Sitting Sad", 124300863605270)
+_ade("Demon Possessed Seizure", 97374291984078)
+_ade("Levitate", 105491566513571)
+_ade("Bite A Friend!", 119360565290363)
+_ade("Team USA Breaking Emote", 18526338976)
+_ade("SpongeBob Imaginaaation", 18443268949)
+_ade("HUGO Let's Drive!", 17360720445)
+_ade("Beauty Touchdown", 16303091119)
+_ade("Paris Hilton - Checking My Angles", 15392937495)
+_ade("Paris Hilton - Iconic IT-Grrrl", 15392932768)
+_ade("Tommy K-Pop Mic Drop", 14024722653)
+_ade("Tommy - Archer", 13823339506)
+_ade("Alo Yoga Pose - Lotus Position", 12507097350)
+_ade("Mean Mug - Tommy Hilfiger", 10214415687)
+_ade("Floor Rock Freeze - Tommy Hilfiger", 10214411646)
+_ade("TWICE I GOT YOU", 16215060261)
+_ade("Shake it", 15571538346)
+_ade("Astrid fr", 14900153406)
+_ade("Calm and ready", 110537281410647)
+_ade("Lachen ist gesund", 111870319434758)
+_ade("arm twist", 9710992846)
+_ade("rise above", 13071993910)
+_ade("samba", 16276506814)
+_ade("90 deegrees turn", 134615135651900)
+_ade("fall apart", 123598192538516)
+_ade("fashion roadkill", 73683655527605)
+_ade("weekly", 105098895743105)
+_ade("fally", 138768535525292)
+_ade("cooool", 98464793617142)
+_ade("mime", 121558490761409)
+_lod:Destroy()
+table.sort(_emt, function(_a, _b) return _a.index < _b.index end)
+for _i, _v in pairs(_emt) do _v.sort.newestfirst = _i end
+table.sort(_emt, function(_a, _b) return _a.index > _b.index end)
+for _i, _v in pairs(_emt) do _v.sort.oldestfirst = _i end
+table.sort(_emt, function(_a, _b) return _a.name:lower() < _b.name:lower() end)
+for _i, _v in pairs(_emt) do _v.sort.alphabeticfirst = _i end
+table.sort(_emt, function(_a, _b) return _a.name:lower() > _b.name:lower() end)
+for _i, _v in pairs(_emt) do _v.sort.alphabeticlast = _i end
+table.sort(_emt, function(_a, _b) return _a.price < _b.price end)
+for _i, _v in pairs(_emt) do _v.sort.lowestprice = _i end
+table.sort(_emt, function(_a, _b) return _a.price > _b.price end)
+for _i, _v in pairs(_emt) do _v.sort.highestprice = _i end
+if not _0xF1 then
+    if _isff("FavoritedEmotes.txt") then pcall(function() _fve = _0xI0:JSONDecode(_rff("FavoritedEmotes.txt")) end)
+    else _wff("FavoritedEmotes.txt", _0xI0:JSONEncode(_fve)) end
+    if _isff("CustomEmotes.txt") then
+        pcall(function()
+            _cse = _0xI0:JSONDecode(_rff("CustomEmotes.txt"))
+            for _, _ce in pairs(_cse) do _ade(_ce.name, _ce.id, 0) end
+        end)
+    else _wff("CustomEmotes.txt", _0xI0:JSONEncode(_cse)) end
+    if _isff("CustomEmoteOrder.txt") then pcall(function() _ceo = _0xI0:JSONDecode(_rff("CustomEmoteOrder.txt")) end)
+    elseif _isff("CustomEmoteOrder") then pcall(function() _ceo = _0xI0:JSONDecode(_rff("CustomEmoteOrder")) end)
+    else _wff("CustomEmoteOrder.txt", _0xI0:JSONEncode(_ceo)) end
+    for _, _e in pairs(_emt) do local _od = _ceo[tostring(_e.id)] if _od then _e.customOrder = _od end end
+    if _isff("FavoritesVisible.txt") then pcall(function() local _dt = _0xI0:JSONDecode(_rff("FavoritesVisible.txt")) _fvv = _dt.visible end)
+    else _wff("FavoritesVisible.txt", _0xI0:JSONEncode({visible = _fvv})) end
+    if _isff("AvatarSwitchKeybind.txt") then pcall(function() local _dt = _0xI0:JSONDecode(_rff("AvatarSwitchKeybind.txt")) _ask = Enum.KeyCode[_dt.keybind] or Enum.KeyCode.G _kbb.Text = _ask.Name end)
+    else _wff("AvatarSwitchKeybind.txt", _0xI0:JSONEncode({keybind = "G"})) end
+    if _isff("AutoCloseEmote.txt") then pcall(function() local _dt = _0xI0:JSONDecode(_rff("AutoCloseEmote.txt")) _cae = _dt.enabled _acb.Text = _cae and "Auto Close: ON" or "Auto Close: OFF" end)
+    else _wff("AutoCloseEmote.txt", _0xI0:JSONEncode({enabled = _cae})) end
+    if _isff("RowCount.txt") then pcall(function() local _dt = _0xI0:JSONDecode(_rff("RowCount.txt")) _rwc = math.clamp(_dt.count or 9, 3, 11) _rcl.Text = tostring(_rwc) _ugr() end)
+    else _wff("RowCount.txt", _0xI0:JSONEncode({count = _rwc})) _ugr() end
+    if _isff("EmoteRecordings.txt") then pcall(function() _svr = _0xI0:JSONDecode(_rff("EmoteRecordings.txt")) end)
+    else _wff("EmoteRecordings.txt", _0xI0:JSONEncode(_svr)) end
+    _rfl()
+end
+local _aga = {{n="Handstand",i="rbxassetid://13027233338",order=1},{n="VIP 01",i="rbxassetid://14852252548",order=2},{n="VIP 03",i="rbxassetid://137445502103066",order=3},{n="VIP 08",i="rbxassetid://11137338685",order=4},{n="VIP 09",i="rbxassetid://11136806744",order=5},{n="Ghostly",i="rbxassetid://124385779438289",order=6},{n="Oof",i="rbxassetid://134763058840745",order=7},{n="Die",i="rbxassetid://14852161489",order=8},{n="Log",i="rbxassetid://116818881329505",order=9},{n="blow",i="rbxassetid://124072584017964",order=10}}
+for _, _ad in ipairs(_aga) do local _ci = tonumber(_ad.i:match("%d+")) if _ci then _ade(_ad.n, _ci, 0) end end
+local _iha = false
+local _sna = false
+_agui = Instance.new("ScreenGui")
+_agui.Name = "AnimGUI"
+_agui.ResetOnSpawn = false
+_agui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+if _0xF1 then _agui.Parent = _lpl.PlayerGui else _agui.Parent = (get_hidden_gui or gethui or function() return _0xC4 end)() end
+local _amn = Instance.new("Frame")
+_amn.Size = UDim2.new(0, 260, 0, 214)
+_amn.Position = UDim2.new(0.015, 0, 0.25, 0)
+_amn.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+_amn.BorderSizePixel = 0
+_amn.Active = true
+_amn.Draggable = true
+_amn.Parent = _agui
+local _ams = Instance.new("UIStroke")
+_ams.Color = Color3.fromRGB(35, 35, 35)
+_ams.Thickness = 1
+_ams.Parent = _amn
+local _atb = Instance.new("Frame")
+_atb.Size = UDim2.new(1, 0, 0, 30)
+_atb.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+_atb.BorderSizePixel = 0
+_atb.Parent = _amn
+local _atl = Instance.new("Frame")
+_atl.Size = UDim2.new(1, 0, 0, 1)
+_atl.Position = UDim2.new(0, 0, 1, 0)
+_atl.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+_atl.BorderSizePixel = 0
+_atl.Parent = _atb
+local _att = Instance.new("TextLabel")
+_att.Size = UDim2.new(1, -80, 1, 0)
+_att.Position = UDim2.new(0, 10, 0, 0)
+_att.BackgroundTransparency = 1
+_att.Text = "ANIMATIONS"
+_att.Font = Enum.Font.GothamBold
+_att.TextColor3 = Color3.fromRGB(245, 245, 245)
+_att.TextSize = 14
+_att.TextXAlignment = Enum.TextXAlignment.Left
+_att.Parent = _atb
+local _anb = Instance.new("TextButton")
+_anb.Size = UDim2.new(0, 30, 0, 20)
+_anb.Position = UDim2.new(1, -68, 0.5, -10)
+_anb.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+_anb.BorderSizePixel = 0
+_anb.Text = "#"
+_anb.Font = Enum.Font.GothamBold
+_anb.TextColor3 = Color3.fromRGB(200, 200, 200)
+_anb.TextSize = 16
+_anb.AutoButtonColor = false
+_anb.Parent = _atb
+local _ans = Instance.new("UIStroke")
+_ans.Color = Color3.fromRGB(35, 35, 35)
+_ans.Thickness = 1
+_ans.Parent = _anb
+local _atg = Instance.new("TextButton")
+_atg.Size = UDim2.new(0, 30, 0, 20)
+_atg.Position = UDim2.new(1, -38, 0.5, -10)
+_atg.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+_atg.BorderSizePixel = 0
+_atg.Text = "⇄"
+_atg.Font = Enum.Font.GothamBold
+_atg.TextColor3 = Color3.fromRGB(200, 200, 200)
+_atg.TextSize = 16
+_atg.AutoButtonColor = false
+_atg.Parent = _atb
+local _ats = Instance.new("UIStroke")
+_ats.Color = Color3.fromRGB(35, 35, 35)
+_ats.Thickness = 1
+_ats.Parent = _atg
+local _acn = Instance.new("Frame")
+_acn.Size = UDim2.new(1, -16, 1, -42)
+_acn.Position = UDim2.new(0, 8, 0, 38)
+_acn.BackgroundTransparency = 1
+_acn.BorderSizePixel = 0
+_acn.ClipsDescendants = true
+_acn.Parent = _amn
+local _aly = Instance.new("UIGridLayout")
+_aly.CellPadding = UDim2.new(0, 6, 0, 6)
+_aly.CellSize = UDim2.new(0.48, 0, 0, 30)
+_aly.HorizontalAlignment = Enum.HorizontalAlignment.Center
+_aly.SortOrder = Enum.SortOrder.LayoutOrder
+_aly.Parent = _acn
+local _rou = Instance.new("Frame")
+_rou.Size = UDim2.new(0, 300, 0, 400)
+_rou.Position = UDim2.new(0.5, -150, 0.5, -200)
+_rou.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+_rou.BorderSizePixel = 0
+_rou.Visible = false
+_rou.Parent = _agui
+local _ros = Instance.new("UIStroke")
+_ros.Color = Color3.fromRGB(35, 35, 35)
+_ros.Thickness = 1
+_ros.Parent = _rou
+local _rtb = Instance.new("Frame")
+_rtb.Size = UDim2.new(1, 0, 0, 35)
+_rtb.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+_rtb.BorderSizePixel = 0
+_rtb.Parent = _rou
+local _rtt = Instance.new("TextLabel")
+_rtt.Size = UDim2.new(1, -50, 1, 0)
+_rtt.Position = UDim2.new(0, 10, 0, 0)
+_rtt.BackgroundTransparency = 1
+_rtt.Text = "REORDER ANIMATIONS"
+_rtt.Font = Enum.Font.GothamBold
+_rtt.TextColor3 = Color3.fromRGB(245, 245, 245)
+_rtt.TextSize = 13
+_rtt.TextXAlignment = Enum.TextXAlignment.Left
+_rtt.Parent = _rtb
+local _rcb = Instance.new("TextButton")
+_rcb.Size = UDim2.new(0, 25, 0, 25)
+_rcb.Position = UDim2.new(1, -30, 0, 5)
+_rcb.BackgroundTransparency = 1
+_rcb.BorderSizePixel = 0
+_rcb.Text = "×"
+_rcb.Font = Enum.Font.GothamBold
+_rcb.TextColor3 = Color3.fromRGB(200, 200, 200)
+_rcb.TextSize = 20
+_rcb.AutoButtonColor = false
+_rcb.Parent = _rtb
+local _rsc = Instance.new("ScrollingFrame")
+_rsc.Size = UDim2.new(1, -20, 1, -55)
+_rsc.Position = UDim2.new(0, 10, 0, 45)
+_rsc.BackgroundTransparency = 1
+_rsc.BorderSizePixel = 0
+_rsc.ScrollBarThickness = 4
+_rsc.ScrollBarImageColor3 = Color3.fromRGB(60, 60, 60)
+_rsc.CanvasSize = UDim2.new(0, 0, 0, 360)
+_rsc.Parent = _rou
+local _rsl2 = Instance.new("UIListLayout")
+_rsl2.Padding = UDim.new(0, 6)
+_rsl2.SortOrder = Enum.SortOrder.LayoutOrder
+_rsl2.Parent = _rsc
+local function _sao()
+    local _od = {}
+    table.sort(_aga, function(_a, _b) return _a.order < _b.order end)
+    for _i, _dt in ipairs(_aga) do table.insert(_od, {n = _dt.n, o = _dt.order}) end
+    _wff("animationplacementsbyza1k.txt", _0xI0:JSONEncode(_od))
+end
+local function _lao()
+    if _isff("animationplacementsbyza1k.txt") then
+        local _sc, _rs = pcall(function() return _0xI0:JSONDecode(_rff("animationplacementsbyza1k.txt")) end)
+        if _sc and _rs then
+            for _, _sv in ipairs(_rs) do
+                for _, _dt in ipairs(_aga) do if _dt.n == _sv.n then _dt.order = _sv.o break end end
+            end
+        end
+    end
+end
+local function _gsa()
+    local _st = {}
+    for _, _dt in ipairs(_aga) do table.insert(_st, _dt) end
+    table.sort(_st, function(_a, _b) return _a.order < _b.order end)
+    return _st
+end
+local function _uab()
+    local _st = _gsa()
+    for _ix, _dt in ipairs(_st) do
+        for _, _bn in ipairs(_acn:GetChildren()) do
+            if _bn:IsA("TextButton") and _bn.Name == _dt.n then
+                local _lb = _bn:FindFirstChild("TextLabel")
+                if _lb then _lb.Text = _sna and (_dt.n .. " #" .. _dt.order) or _dt.n end
+                _bn.LayoutOrder = _dt.order
+                break
+            end
+        end
+    end
+end
+local function _cri(_dt)
+    local _it = Instance.new("Frame")
+    _it.Size = UDim2.new(1, 0, 0, 35)
+    _it.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    _it.BorderSizePixel = 0
+    _it.LayoutOrder = _dt.order
+    _it.Parent = _rsc
+    local _is = Instance.new("UIStroke")
+    _is.Color = Color3.fromRGB(35, 35, 35)
+    _is.Thickness = 1
+    _is.Parent = _it
+    local _nl = Instance.new("TextLabel")
+    _nl.Size = UDim2.new(1, -80, 1, 0)
+    _nl.Position = UDim2.new(0, 10, 0, 0)
+    _nl.BackgroundTransparency = 1
+    _nl.Text = _dt.n
+    _nl.Font = Enum.Font.Gotham
+    _nl.TextColor3 = Color3.fromRGB(200, 200, 200)
+    _nl.TextSize = 13
+    _nl.TextXAlignment = Enum.TextXAlignment.Left
+    _nl.Parent = _it
+    local _nb = Instance.new("TextBox")
+    _nb.Size = UDim2.new(0, 50, 0, 25)
+    _nb.Position = UDim2.new(1, -60, 0.5, -12)
+    _nb.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+    _nb.BorderSizePixel = 0
+    _nb.Text = tostring(_dt.order)
+    _nb.Font = Enum.Font.Gotham
+    _nb.TextColor3 = Color3.fromRGB(200, 200, 200)
+    _nb.TextSize = 13
+    _nb.ClearTextOnFocus = false
+    _nb.Parent = _it
+    _nb.FocusLost:Connect(function()
+        local _nm = tonumber(_nb.Text)
+        if _nm and _nm >= 1 and _nm <= #_aga and _nm == math.floor(_nm) then
+            local _oo = _dt.order
+            for _, _od in ipairs(_aga) do if _od.order == _nm and _od ~= _dt then _od.order = _oo break end end
+            _dt.order = _nm
+            for _, _oi in ipairs(_rsc:GetChildren()) do if _oi:IsA("Frame") then _oi:Destroy() end end
+            local _st = _gsa()
+            for _, _ad in ipairs(_st) do _cri(_ad) end
+            _uab()
+            _sao()
+        else _nb.Text = tostring(_dt.order) end
+    end)
+end
+local function _tge(_id, _nm, _bn)
+    local _ch = _0xJ1.LocalPlayer.Character
+    local _hm = _ch and _ch:FindFirstChildOfClass("Humanoid")
+    if not _hm then return end
+    if _aai == _id then
+        if _aat then _aat:Stop() _aat:Destroy() _aat = nil end
+        _aai = nil
+        if _isr then table.insert(_crt, {id = "STOP", name = "Stop", time = tick() - _rst, source = "AnimTab"}) end
+        if _aab then
+            _0xH9:Create(_aab, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(20, 20, 20)}):Play()
+            if _aab:FindFirstChild("TextLabel") then _0xH9:Create(_aab.TextLabel, TweenInfo.new(0.2), {TextColor3 = Color3.fromRGB(200, 200, 200)}):Play() end
+            _aab = nil
+        end
+        return
+    end
+    if _aat then
+        if _isr then table.insert(_crt, {id = "STOP", name = "Stop", time = tick() - _rst, source = "AnimTab"}) end
+        _aat:Stop()
+        _aat:Destroy()
+        _aat = nil
+    end
+    if _aab then
+        _0xH9:Create(_aab, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(20, 20, 20)}):Play()
+        if _aab:FindFirstChild("TextLabel") then _0xH9:Create(_aab.TextLabel, TweenInfo.new(0.2), {TextColor3 = Color3.fromRGB(200, 200, 200)}):Play() end
+    end
+    if _isr then table.insert(_crt, {id = _id, name = _nm, time = tick() - _rst, source = "AnimTab"}) end
+    local _an = Instance.new("Animation")
+    _an.AnimationId = _id
+    local _tr = _hm:LoadAnimation(_an)
+    if _tr then
+        _tr:Play()
+        _aat = _tr
+        _aai = _id
+        _aab = _bn
+        _0xH9:Create(_bn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(255, 255, 255)}):Play()
+        if _bn:FindFirstChild("TextLabel") then _0xH9:Create(_bn.TextLabel, TweenInfo.new(0.2), {TextColor3 = Color3.fromRGB(0, 0, 0)}):Play() end
+        task.spawn(function()
+            _tr.Stopped:Wait()
+            if _aai == _id then
+                _aai = nil
+                _aat = nil
+                _0xH9:Create(_bn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(20, 20, 20)}):Play()
+                if _bn:FindFirstChild("TextLabel") then _0xH9:Create(_bn.TextLabel, TweenInfo.new(0.2), {TextColor3 = Color3.fromRGB(200, 200, 200)}):Play() end
+                _aab = nil
+            end
+        end)
+    end
+end
+_lao()
+for _ix, _dt in ipairs(_aga) do
+    local _bn = Instance.new("TextButton")
+    _bn.Name = _dt.n
+    _bn.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    _bn.BorderSizePixel = 0
+    _bn.Text = ""
+    _bn.AutoButtonColor = false
+    _bn.LayoutOrder = _dt.order
+    _bn.Parent = _acn
+    local _bs = Instance.new("UIStroke")
+    _bs.Color = Color3.fromRGB(35, 35, 35)
+    _bs.Thickness = 1
+    _bs.Parent = _bn
+    local _bl = Instance.new("TextLabel")
+    _bl.Size = UDim2.new(1, -8, 1, 0)
+    _bl.Position = UDim2.new(0, 4, 0, 0)
+    _bl.BackgroundTransparency = 1
+    _bl.Text = _dt.n
+    _bl.Font = Enum.Font.Gotham
+    _bl.TextColor3 = Color3.fromRGB(200, 200, 200)
+    _bl.TextSize = 13
+    _bl.TextXAlignment = Enum.TextXAlignment.Center
+    _bl.Parent = _bn
+    _bn.MouseEnter:Connect(function() if _aab ~= _bn then _0xH9:Create(_bn, TweenInfo.new(0.08), {BackgroundColor3 = Color3.fromRGB(30, 30, 30)}):Play() end end)
+    _bn.MouseLeave:Connect(function() if _aab ~= _bn then _0xH9:Create(_bn, TweenInfo.new(0.08), {BackgroundColor3 = Color3.fromRGB(20, 20, 20)}):Play() end end)
+    _bn.MouseButton1Click:Connect(function() _tge(_dt.i, _dt.n, _bn) end)
+end
+_uab()
+_atg.MouseButton1Click:Connect(function()
+    _iha = not _iha
+    if _iha then
+        _0xH9:Create(_amn, TweenInfo.new(0.25, Enum.EasingStyle.Quad), {Size = UDim2.new(0, 450, 0, 110)}):Play()
+        _aly.CellSize = UDim2.new(0, 94, 0, 30)
+        _aly.CellPadding = UDim2.new(0, 4, 0, 6)
+    else
+        _0xH9:Create(_amn, TweenInfo.new(0.25, Enum.EasingStyle.Quad), {Size = UDim2.new(0, 260, 0, 214)}):Play()
+        _aly.CellSize = UDim2.new(0.48, 0, 0, 30)
+        _aly.CellPadding = UDim2.new(0, 6, 0, 6)
+    end
+end)
+_anb.MouseButton1Click:Connect(function()
+    _rou.Visible = true
+    for _, _it in ipairs(_rsc:GetChildren()) do if _it:IsA("Frame") then _it:Destroy() end end
+    local _st = _gsa()
+    for _, _dt in ipairs(_st) do _cri(_dt) end
+end)
+_rcb.MouseButton1Click:Connect(function() _rou.Visible = false end)
+local function _tfb()
+    _fvv = not _fvv
+    for _, _ch in pairs(_frm:GetChildren()) do
+        if _ch:IsA("ImageButton") then
+            local _fv = _ch:FindFirstChild("favorite")
+            if _fv then _fv.Visible = _fvv end
+        end
+    end
+    local _hfb = _frm:FindFirstChild("HideFavoritesBtn")
+    if _hfb then _hfb.Text = _fvv and "Hide Favorites" or "Show Favorites" end
+    _wff("FavoritesVisible.txt", _0xI0:JSONEncode({visible = _fvv}))
+end
+_oca = function(_ch)
+    for _i, _v in pairs(_frm:GetChildren()) do if not _v:IsA("UIGridLayout") then _v:Destroy() end end
+    local _hm = _wfc(_ch, "Humanoid")
+    local _ds = _hm:WaitForChild("HumanoidDescription", 5) or Instance.new("HumanoidDescription", _hm)
+    local _rt = Instance.new("UIAspectRatioConstraint")
+    _rt.AspectType = Enum.AspectType.ScaleWithParentSize
+    local _hfb = Instance.new("TextButton")
+    _hfb.Name = "HideFavoritesBtn"
+    _rt:Clone().Parent = _hfb
+    _hfb.LayoutOrder = 0
+    _hfb.TextColor3 = Color3.new(1, 1, 1)
+    _hfb.BorderSizePixel = 0
+    _hfb.BackgroundTransparency = 0.3
+    _hfb.BackgroundColor3 = Color3.new(0, 0, 0)
+    _hfb.TextScaled = true
+    _hfb.Text = _fvv and "Hide Favorites" or "Show Favorites"
+    _hfb.Font = Enum.Font.GothamBold
+    _hfb:SetAttribute("name", "")
+    Instance.new("UICorner").Parent = _hfb
+    local _hfs = Instance.new("UIStroke")
+    _hfs.Color = Color3.fromRGB(80, 80, 80)
+    _hfs.Thickness = 1
+    _hfs.Transparency = 0.5
+    _hfs.Parent = _hfb
+    _hfb.MouseButton1Click:Connect(_tfb)
+    _hfb.MouseEnter:Connect(function() _enm.Text = "Toggle Favorites" end)
+    _hfb.Parent = _frm
+    local function _ceb(_em, _dc, _rc)
+        _dc:AddEmote(_em.name, _em.id)
+        local _eb = Instance.new("ImageButton")
+        local _if = table.find(_fve, _em.id)
+        if _ceo[tostring(_em.id)] then _eb.LayoutOrder = _ceo[tostring(_em.id)]
+        else local _sv = (_em.sort and _em.sort[_cst]) or _em.index or 0 _eb.LayoutOrder = _sv + ((_if and 0) or #_emt) end
+        _eb.Name = tostring(_em.id)
+        _eb:SetAttribute("name", _em.name)
+        Instance.new("UICorner").Parent = _eb
+        _eb.Image = _em.icon
+        _eb.BackgroundTransparency = 0.5
+        _eb.BackgroundColor3 = Color3.new(0, 0, 0)
+        _eb.BorderSizePixel = 0
+        _rc:Clone().Parent = _eb
+        local _bs = Instance.new("UIStroke")
+        _bs.Color = Color3.fromRGB(80, 80, 80)
+        _bs.Thickness = 1
+        _bs.Transparency = 0.5
+        _bs.Parent = _eb
+        local _en = Instance.new("TextLabel")
+        _en.Name = "number"
+        _en.TextScaled = true
+        _en.BackgroundTransparency = 1
+        _en.TextColor3 = Color3.new(1, 1, 1)
+        _en.BorderSizePixel = 0
+        _en.AnchorPoint = Vector2.new(0.5, 0.5)
+        _en.Size = UDim2.new(0.2, 0, 0.2, 0)
+        _en.Position = UDim2.new(0.1, 0, 0.9, 0)
+        _en.Text = tostring((_em.sort and _em.sort[_cst]) or _em.index or "")
+        _en.TextXAlignment = Enum.TextXAlignment.Center
+        _en.TextYAlignment = Enum.TextYAlignment.Center
+        _en.Font = Enum.Font.GothamBold
+        local _ns = Instance.new("UIStroke")
+        _ns.Transparency = 0.5
+        _ns.Parent = _en
+        _en.Parent = _eb
+        _eb.Parent = _frm
+        _eb.MouseButton1Click:Connect(function()
+            if not _dge then _ple(_em.name, _em.id)
+            else
+                local _do = _dge.button.LayoutOrder
+                local _to = _eb.LayoutOrder
+                _dge.button.LayoutOrder = _to
+                _eb.LayoutOrder = _do
+                _ceo[tostring(_dge.id)] = _to
+                _ceo[tostring(_em.id)] = _do
+                _wff("CustomEmoteOrder.txt", _0xI0:JSONEncode(_ceo))
+                _dge.button.BackgroundColor3 = Color3.new(0, 0, 0)
+                _dge.button.BackgroundTransparency = 0.5
+                _dge = nil
+            end
+        end)
+        _eb.MouseButton2Down:Connect(function()
+            _dge = {button = _eb, id = _em.id, originalOrder = _eb.LayoutOrder}
+            _eb.BackgroundColor3 = Color3.fromRGB(100, 100, 255)
+            _eb.BackgroundTransparency = 0.2
+        end)
+        _eb.MouseEnter:Connect(function() _enm.Text = _em.name end)
+        local _fv = Instance.new("ImageButton")
+        _fv.Name = "favorite"
+        _fv.Image = table.find(_fve, _em.id) and _fon or _fof
+        _fv.AnchorPoint = Vector2.new(0.5, 0.5)
+        _fv.Size = UDim2.new(0.1, 0, 0.1, 0)
+        _fv.Position = UDim2.new(0.9, 0, 0.9, 0)
+        _fv.BorderSizePixel = 0
+        _fv.BackgroundTransparency = 1
+        _fv.Visible = _fvv
+        _fv.Parent = _eb
+        _fv.MouseButton1Click:Connect(function()
+            local _ix = table.find(_fve, _em.id)
+            if _ix then
+                table.remove(_fve, _ix)
+                _fv.Image = _fof
+                _eb.LayoutOrder = _em.sort[_cst] + #_emt
+            else
+                table.insert(_fve, _em.id)
+                _fv.Image = _fon
+                _eb.LayoutOrder = _em.sort[_cst]
+            end
+            _wff("FavoritedEmotes.txt", _0xI0:JSONEncode(_fve))
+        end)
+    end
+    for _i, _em in pairs(_emt) do _ceb(_em, _ds, _rt) end
+    for _i = 1, 9 do
+        local _f = Instance.new("Frame")
+        _f.LayoutOrder = 2147483647
+        _f.Name = "filler"
+        _f.BackgroundTransparency = 1
+        _rt:Clone().Parent = _f
+        _f.Parent = _frm
+    end
+    _aai = nil
+    _aat = nil
+    if _aab then
+        _aab.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+        if _aab:FindFirstChild("TextLabel") then _aab.TextLabel.TextColor3 = Color3.fromRGB(200, 200, 200) end
+        _aab = nil
+    end
+end
+if _lpl.Character then _oca(_lpl.Character) end
+_lpl.CharacterAdded:Connect(_oca)
 task.wait(5)
-ScreenGui.Parent = CoreGui
+_scr.Parent = _0xC4
